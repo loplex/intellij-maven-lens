@@ -1,5 +1,6 @@
 package cz.loplex.intellijmavenlens
 
+import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.Module
@@ -7,10 +8,13 @@ import com.intellij.openapi.progress.ProgressIndicator
 import com.intellij.openapi.progress.ProgressManager
 import com.intellij.openapi.progress.Task
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.roots.LibraryOrderEntry
+import com.intellij.openapi.roots.ModifiableRootModel
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.libraries.Library
 import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar
+import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.vfs.JarFileSystem
 import com.intellij.openapi.vfs.LocalFileSystem
 import com.intellij.openapi.vfs.VirtualFile
@@ -58,7 +62,9 @@ class MavenDependenciesImporter(private val project: Project) : MavenImportListe
                 indicator.checkCanceled()
                 indicator.fraction = index.toDouble() / importedProjects.size
 
-                val module = manager.findModule(mavenProject) ?: continue
+                val module = ReadAction.compute<Module?, RuntimeException> {
+                    manager.findModule(mavenProject)
+                } ?: continue
                 val libraries = resolvePluginLibraries(mavenProject, localRepository)
                 if (libraries.isNotEmpty()) {
                     result[module] = libraries
@@ -82,8 +88,9 @@ class MavenDependenciesImporter(private val project: Project) : MavenImportListe
 
         private fun resolvePluginLibraries(mavenProject: MavenProject, localRepository: Path): List<ResolvedLibrary> {
             val libraries = mutableListOf<ResolvedLibrary>()
+            val plugins = ReadAction.compute<List<MavenPlugin>, RuntimeException> { mavenProject.plugins.toList() }
 
-            for (plugin in mavenProject.plugins) {
+            for (plugin in plugins) {
                 val classRoots = LinkedHashSet<VirtualFile>()
 
                 locateArtifactJar(localRepository, plugin.mavenId)?.let(classRoots::add)
@@ -135,30 +142,54 @@ class MavenDependenciesImporter(private val project: Project) : MavenImportListe
         const val LIBRARY_PREFIX = "MavenLens: "
 
         /**
-         * Recreates every "MavenLens:" project library from the resolved plugin data and attaches
-         * them to the classpath of the modules they belong to.
+         * Syncs every "MavenLens:" project library with the resolved plugin data and attaches them
+         * to the classpath of the modules they belong to.
          *
-         * Runs entirely inside a single write action: existing "MavenLens:" libraries are removed
-         * first (so stale versions from a previous import never linger), then the fresh set is
-         * created and wired into each module's [com.intellij.openapi.roots.ModifiableRootModel].
+         * A library whose name and class roots already match a resolved plugin is left untouched
+         * rather than removed and recreated: module [com.intellij.openapi.roots.LibraryOrderEntry]
+         * instances reference a library by its identity, so blindly recreating every library on each
+         * import would strand every previously-added order entry as a broken reference the moment the
+         * old instance is removed from the table. Only libraries that actually changed (or no longer
+         * correspond to any resolved plugin) are removed/recreated; module order entries are diffed
+         * the same way, by name, against what this import actually resolved.
+         *
+         * Everything is prepared first (library table changes, per-module
+         * [com.intellij.openapi.roots.ModifiableRootModel]s with their library entries added) and
+         * only committed once none of that preparation has thrown - so a failure partway through
+         * never leaves some modules updated and others stale. Only the actual `commit()` calls,
+         * which the platform documents as effectively non-failing, sit outside that guarantee.
          */
         private fun applyToProject(project: Project, moduleLibraries: Map<Module, List<ResolvedLibrary>>) {
             WriteAction.run<RuntimeException> {
                 val libraryTable = LibraryTablesRegistrar.getInstance().getLibraryTable(project)
                 val tableModel = libraryTable.modifiableModel
+                val preparedRootModels = mutableListOf<ModifiableRootModel>()
 
-                for (library in tableModel.libraries) {
-                    val name = library.name
-                    if (name != null && name.startsWith(LIBRARY_PREFIX)) {
-                        tableModel.removeLibrary(library)
+                try {
+                    val resolvedByName = LinkedHashMap<String, ResolvedLibrary>()
+                    for (libraries in moduleLibraries.values) {
+                        for (resolved in libraries) {
+                            resolvedByName.putIfAbsent(resolved.name, resolved)
+                        }
                     }
-                }
 
-                val createdLibraries = HashMap<String, Library>()
-                for (libraries in moduleLibraries.values) {
-                    for (resolved in libraries) {
-                        createdLibraries.getOrPut(resolved.name) {
-                            val library = tableModel.createLibrary(resolved.name)
+                    val existingLibraries = tableModel.libraries
+                        .filter { it.name?.startsWith(LIBRARY_PREFIX) == true }
+                        .associateBy { it.name!! }
+
+                    val activeLibraries = HashMap<String, Library>()
+                    for ((name, resolved) in resolvedByName) {
+                        val existing = existingLibraries[name]
+                        val expectedRoots = resolved.classRoots.map { it.url }.toSet()
+                        val upToDate = existing != null && existing.getUrls(OrderRootType.CLASSES).toSet() == expectedRoots
+
+                        activeLibraries[name] = if (upToDate) {
+                            existing
+                        } else {
+                            if (existing != null) {
+                                tableModel.removeLibrary(existing)
+                            }
+                            val library = tableModel.createLibrary(name)
                             val libraryModel = library.modifiableModel
                             for (classRoot in resolved.classRoots) {
                                 libraryModel.addRoot(classRoot, OrderRootType.CLASSES)
@@ -167,32 +198,69 @@ class MavenDependenciesImporter(private val project: Project) : MavenImportListe
                             library
                         }
                     }
-                }
-                tableModel.commit()
 
-                for ((module, libraries) in moduleLibraries) {
-                    if (module.isDisposed) {
-                        continue
+                    // Anything still in the table that no longer corresponds to a resolved plugin is stale.
+                    for (library in existingLibraries.values) {
+                        if (library.name !in activeLibraries) {
+                            tableModel.removeLibrary(library)
+                        }
                     }
 
-                    val rootModel = ModuleRootManager.getInstance(module).modifiableModel
-                    try {
+                    for ((module, libraries) in moduleLibraries) {
+                        if (module.isDisposed) {
+                            continue
+                        }
+
+                        val rootModel = ModuleRootManager.getInstance(module).modifiableModel
+                        preparedRootModels += rootModel
+
+                        val wantedNames = libraries.mapTo(HashSet()) { it.name }
+
+                        // Drop order entries for libraries this import no longer resolves for this
+                        // module (dropped plugin, or a library that got recreated above).
+                        for (entry in rootModel.orderEntries) {
+                            val libraryName = (entry as? LibraryOrderEntry)?.libraryName ?: continue
+                            if (libraryName.startsWith(LIBRARY_PREFIX) &&
+                                (libraryName !in wantedNames || activeLibraries[libraryName] !== entry.library)
+                            ) {
+                                rootModel.removeOrderEntry(entry)
+                            }
+                        }
+
+                        val alreadyPresent = rootModel.orderEntries
+                            .filterIsInstance<LibraryOrderEntry>()
+                            .mapNotNullTo(HashSet()) { it.libraryName }
+
                         for (resolved in libraries) {
-                            val library = createdLibraries[resolved.name] ?: continue
+                            if (resolved.name in alreadyPresent) {
+                                continue
+                            }
+                            val library = activeLibraries[resolved.name] ?: continue
                             rootModel.addLibraryEntry(library)
                         }
-                        rootModel.commit()
-                    } catch (e: Exception) {
-                        rootModel.dispose()
-                        throw e
                     }
-                }
 
-                LOG.info(
-                    "Maven Lens attached ${createdLibraries.size} plugin librar" +
-                        (if (createdLibraries.size == 1) "y" else "ies") +
-                        " across ${moduleLibraries.size} module(s)."
-                )
+                    // Nothing above touched committed project state - commit the shared library
+                    // table first so every module below can only ever reference an already-known library.
+                    tableModel.commit()
+                    for (rootModel in preparedRootModels) {
+                        rootModel.commit()
+                    }
+
+                    LOG.info(
+                        "Maven Lens synced ${activeLibraries.size} plugin librar" +
+                            (if (activeLibraries.size == 1) "y" else "ies") +
+                            " across ${moduleLibraries.size} module(s)."
+                    )
+                } catch (e: Throwable) {
+                    for (rootModel in preparedRootModels) {
+                        if (!rootModel.isDisposed) {
+                            rootModel.dispose()
+                        }
+                    }
+                    Disposer.dispose(tableModel)
+                    throw e
+                }
             }
         }
     }
