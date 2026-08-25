@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 40 40" width="40" height="40">
+    <!-- Dark background -->
+    <rect width="40" height="40" rx="8" fill="#1E1E2A"/>
+
+    <!-- Large, highly readable base letter M (contrast gray) -->
+    <path d="M8 30V10L17 22L26 10V30" stroke="#94A3B8" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+
+    <!-- LARGE LENS IN THE CENTER -->
+    <!-- Lens handle -->
+    <line x1="26" y1="26" x2="34" y2="34" stroke="#FFFFFF" stroke-width="5" stroke-linecap="round"/>
+
+    <!-- Lens glass -->
+    <circle cx="20" cy="20" r="9" fill="#00D2FF" fill-opacity="0.1" stroke="#FFFFFF" stroke-width="3.5"/>
+
+    <!-- Fragment of the letter M inside the lens - in vibrant neon Maven colors -->
+    <g>
+        <path d="M14 20L17 24" stroke="#3B82F6" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+        <path d="M17 24L20 20" stroke="#EF4444" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>
+    </g>
+
+    <!-- Light reflection on the lens glass -->
+    <path d="M15 16 A 6 6 0 0 1 21 13" stroke="#FFFFFF" stroke-width="1.5" stroke-linecap="round" fill="none"/>
+</svg>

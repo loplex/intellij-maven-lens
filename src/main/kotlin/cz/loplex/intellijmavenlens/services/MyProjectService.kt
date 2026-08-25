@@ -1,9 +1,9 @@
-package com.github.loplex.intellijmavenlens.services
+package cz.loplex.intellijmavenlens.services
 
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project
-import com.github.loplex.intellijmavenlens.MyBundle
+import cz.loplex.intellijmavenlens.MyBundle
 
 @Service(Service.Level.PROJECT)
 class MyProjectService(project: Project) {

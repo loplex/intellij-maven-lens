@@ -1,4 +1,4 @@
-# intellij-maven-lens
+# Maven Lens - IntelliJ Platform Plugin
 
 ![Build](https://github.com/loplex/intellij-maven-lens/workflows/Build/badge.svg)
 [![Version](https://img.shields.io/jetbrains/plugin/v/MARKETPLACE_ID.svg)](https://plugins.jetbrains.com/plugin/MARKETPLACE_ID)
@@ -6,17 +6,34 @@
 
 ## Template ToDo list
 - [x] Create a new [IntelliJ Platform Plugin Template][template] project.
-- [ ] Get familiar with the [template documentation][template].
-- [ ] Adjust the [group](./gradle.properties), as well as the [id](./src/main/resources/META-INF/plugin.xml), [name](./src/main/resources/META-INF/plugin.xml), and [sources package](./src/main/kotlin).
-- [ ] Adjust the plugin [description](./src/main/resources/META-INF/plugin.xml) (see [Tips][docs:plugin-description]) and this README to describe what your plugin does.
-- [ ] Review the [Legal Agreements](https://plugins.jetbrains.com/docs/marketplace/legal-agreements.html?from=IJPluginTemplate).
+- [x] Get familiar with the [template documentation][template].
+- [x] Adjust the [group](./gradle.properties), as well as the [id](./src/main/resources/META-INF/plugin.xml), [name](./src/main/resources/META-INF/plugin.xml), and [sources package](./src/main/kotlin).
+- [x] Adjust the plugin [description](./src/main/resources/META-INF/plugin.xml) (see [Tips][docs:plugin-description]) and this README to describe what your plugin does.
+- [x] Review the [Legal Agreements](https://plugins.jetbrains.com/docs/marketplace/legal-agreements.html?from=IJPluginTemplate).
 - [ ] [Publish a plugin manually](https://plugins.jetbrains.com/docs/intellij/publishing-plugin.html?from=IJPluginTemplate) for the first time.
 - [ ] Set the `MARKETPLACE_ID` in the above README badges. You can obtain it once the plugin is published to JetBrains Marketplace.
 - [ ] Set the [Plugin Signing](https://plugins.jetbrains.com/docs/intellij/plugin-signing.html?from=IJPluginTemplate) related [secrets](https://github.com/JetBrains/intellij-platform-plugin-template#environment-variables).
 - [ ] Set the [Deployment Token](https://plugins.jetbrains.com/docs/marketplace/plugin-upload.html?from=IJPluginTemplate).
 - [ ] Click the <kbd>Watch</kbd> button on the top of the [IntelliJ Platform Plugin Template][template] to be notified about releases containing new features and fixes.
 
-This Fancy IntelliJ Platform Plugin is going to be your implementation of the brilliant ideas that you have.
+
+**Maven Lens** brings transparency to your Maven build configuration by making hidden plugin dependencies visible inside IntelliJ IDEA.
+
+By default, IntelliJ IDEA indexes standard project dependencies, but leaves the classes and dependencies of Maven plugins hidden from the Project View, code completion, and search. **Maven Lens** automates this bridging process.
+
+### Key Features
+
+* **Automatic Attachment:** Automatically triggers after every Maven reload/import.
+* **Plugin Visibility:** Registers all declared Maven plugins as standard Project Libraries.
+* **Deep Dependency Resolution:** Resolves and attaches internal plugin dependencies
+  (the `<dependencies>` block inside a plugin declaration).
+* **Instant Code Exploration:** Enables standard IDE features like "Go to Class",
+  code completion, and decompilation for plugin internals.
+
+### How it works
+
+Every time you reimport your Maven project, Maven Lens scans your `pom.xml` files, resolves the physical JAR locations within your local `.m2/repository`, and maps them to the project structure seamlessly without altering your original build files.
+
 
 ## Installation
 
