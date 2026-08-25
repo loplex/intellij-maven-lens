@@ -5,12 +5,9 @@
     <vendor>loplex</vendor>
     <description><![CDATA[
         <p>
-            <b>Maven Lens</b> brings transparency to your Maven build configuration by making
-            hidden plugin dependencies visible inside IntelliJ IDEA.
-        </p>
-        <p>
-            Perfect for debugging build extensions, exploring plugin code, and enabling full IDE
-            code completion for custom Maven goals.
+            Automatically exposes Maven plugins and their internal dependencies as IntelliJ
+            project libraries. Perfect for debugging build extensions, exploring plugin code,
+            and enabling full IDE code completion for custom Maven goals.
         </p>
 
         <p>
@@ -55,5 +52,11 @@
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.idea.maven</depends>
 
+    <projectListeners>
+        <listener
+            class="cz.loplex.intellijmavenlens.MavenDependenciesImporter"
+            topic="org.jetbrains.idea.maven.project.MavenImportListener" />
+    </projectListeners>
 </idea-plugin>
