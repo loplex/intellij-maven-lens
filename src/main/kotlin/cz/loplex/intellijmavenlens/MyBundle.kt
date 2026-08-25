@@ -1,4 +1,4 @@
-package com.github.loplex.intellijmavenlens
+package cz.loplex.intellijmavenlens
 
 import com.intellij.DynamicBundle
 import org.jetbrains.annotations.NonNls

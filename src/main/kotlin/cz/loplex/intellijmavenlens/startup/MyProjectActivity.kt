@@ -1,4 +1,4 @@
-package com.github.loplex.intellijmavenlens.startup
+package cz.loplex.intellijmavenlens.startup
 
 import com.intellij.openapi.diagnostic.thisLogger
 import com.intellij.openapi.project.Project

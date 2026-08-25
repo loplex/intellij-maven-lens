@@ -1,11 +1,57 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.github.loplex.intellijmavenlens</id>
-    <name>intellij-maven-lens</name>
+    <id>cz.loplex.intellijmavenlens</id>
+    <name>Maven Lens</name>
     <vendor>loplex</vendor>
     <description><![CDATA[
-        <p><b>intellij-maven-lens</b> is a repository that provides a pure template to make it easier to create a new plugin project.</p>
-        <p>The main goal of this template is to speed up the setup phase of plugin development for both new and experienced developers by preconfiguring the project scaffold and CI, linking to the proper documentation pages, and keeping everything organized.</p>
+        <p>
+            <b>Maven Lens</b> brings transparency to your Maven build configuration by making
+            hidden plugin dependencies visible inside IntelliJ IDEA.
+        </p>
+        <p>
+            Perfect for debugging build extensions, exploring plugin code, and enabling full IDE
+            code completion for custom Maven goals.
+        </p>
+
+        <p>
+            By default, IntelliJ IDEA indexes standard project dependencies, but leaves the classes
+            and dependencies of Maven plugins hidden from the Project View, code completion, and
+            search. <b>Maven Lens</b> automates this bridging process.
+        </p>
+
+        <h3>
+            Key Features
+        </h3>
+        <ul>
+            <li>
+                <b>Automatic Attachment:</b>
+                Automatically triggers after every Maven reload/import.
+            </li>
+            <li>
+                <b>Plugin Visibility:</b>
+                Registers all declared Maven plugins as standard Project Libraries.
+            </li>
+            <li>
+                <b>Deep Dependency Resolution:</b>
+                Resolves and attaches internal plugin dependencies (the
+                <code>&lt;dependencies&gt;</code> block inside a plugin declaration).
+            </li>
+            <li>
+                <b>Instant Code Exploration:</b>
+                Enables standard IDE features like "Go to Class", code completion, and
+                decompilation for plugin internals.
+            </li>
+        </ul>
+
+        <h3>
+            How it works
+        </h3>
+        <p>
+            Every time you reimport your Maven project, Maven Lens scans your <code>pom.xml</code>
+            files, resolves the physical JAR locations within your local
+            <code>.m2/repository</code>, and maps them to the project structure seamlessly without
+            altering your original build files.
+        </p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
@@ -13,7 +59,7 @@
     <resource-bundle>messages.MyBundle</resource-bundle>
 
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow factoryClass="com.github.loplex.intellijmavenlens.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
-        <postStartupActivity implementation="com.github.loplex.intellijmavenlens.startup.MyProjectActivity" />
+        <toolWindow factoryClass="cz.loplex.intellijmavenlens.toolWindow.MyToolWindowFactory" id="MyToolWindow"/>
+        <postStartupActivity implementation="cz.loplex.intellijmavenlens.startup.MyProjectActivity" />
     </extensions>
 </idea-plugin>
