@@ -1,0 +1,171 @@
+package cz.loplex.intellijmavenlens
+
+import com.intellij.maven.testFramework.MavenImportingTestCase
+import com.intellij.openapi.roots.OrderRootType
+import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar
+import com.intellij.testFramework.PlatformTestUtil
+import java.nio.file.Files
+import java.nio.file.Path
+import java.util.jar.JarEntry
+import java.util.jar.JarOutputStream
+import java.util.zip.ZipEntry
+
+/**
+ * End-to-end test driving a real (embedded) Maven import through [MavenDependenciesImporter],
+ * exactly as the IDE would after a `pom.xml` reload.
+ *
+ * The local Maven repository used by the import is redirected to a private, hermetic directory
+ * pre-seeded with fake plugin/dependency JARs, so the test resolves entirely offline instead of
+ * depending on real network access or the developer's `~/.m2`.
+ */
+class MavenDependenciesImporterTest : MavenImportingTestCase() {
+
+    override fun setUp() {
+        super.setUp()
+        repositoryPath = dir.resolve("local-repository")
+        Files.createDirectories(repositoryPath)
+    }
+
+    fun `test attaches plugin and its internal dependency as a project library`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        installFakeArtifact(GROUP_ID, "sample-plugin-dep", "1.0.0")
+
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>1.0.0</version>
+                        <dependencies>
+                            <dependency>
+                                <groupId>$GROUP_ID</groupId>
+                                <artifactId>sample-plugin-dep</artifactId>
+                                <version>1.0.0</version>
+                            </dependency>
+                        </dependencies>
+                    </plugin>
+                </plugins>
+            </build>
+            """.trimIndent()
+        )
+
+        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        assertProjectLibraries(libraryName)
+        assertLibraryClassRootsContain(
+            libraryName,
+            artifactPath(GROUP_ID, "sample-plugin", "1.0.0"),
+            artifactPath(GROUP_ID, "sample-plugin-dep", "1.0.0"),
+        )
+        assertModuleLibDeps("project", libraryName)
+    }
+
+    fun `test garbage-collects stale MavenLens libraries on reimport`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+            """.trimIndent()
+        )
+        val oldLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(oldLibraryName)
+        assertProjectLibraries(oldLibraryName)
+
+        installFakeArtifact(GROUP_ID, "sample-plugin", "2.0.0", packaging = "maven-plugin")
+        updateProjectPom(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>2.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+            """.trimIndent()
+        )
+        importProject()
+
+        val newLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:2.0.0"
+        awaitLibrary(newLibraryName)
+
+        assertProjectLibraries(newLibraryName)
+    }
+
+    private fun awaitLibrary(libraryName: String) {
+        PlatformTestUtil.waitWithEventsDispatching(
+            { "Maven Lens never attached library $libraryName" },
+            { LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName) != null },
+            10,
+        )
+    }
+
+    private fun assertLibraryClassRootsContain(libraryName: String, vararg expectedJars: Path) {
+        val library = LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName)
+        assertNotNull("Library $libraryName not found", library)
+        val actualPaths = library!!.getFiles(OrderRootType.CLASSES).map { it.path.substringBefore("!/") }
+        for (expected in expectedJars) {
+            assertContain(actualPaths, expected.toString())
+        }
+    }
+
+    /** Writes a minimal valid `pom.xml` + non-empty `.jar` for `groupId:artifactId:version` into the fake local repository. */
+    private fun installFakeArtifact(groupId: String, artifactId: String, version: String, packaging: String = "jar") {
+        val artifactDir = repositoryPath
+            .resolve(groupId.replace('.', '/'))
+            .resolve(artifactId)
+            .resolve(version)
+        Files.createDirectories(artifactDir)
+
+        Files.writeString(
+            artifactDir.resolve("$artifactId-$version.pom"),
+            """
+            <?xml version="1.0"?>
+            <project xmlns="http://maven.apache.org/POM/$modelVersion">
+                <modelVersion>$modelVersion</modelVersion>
+                <groupId>$groupId</groupId>
+                <artifactId>$artifactId</artifactId>
+                <version>$version</version>
+                <packaging>$packaging</packaging>
+            </project>
+            """.trimIndent()
+        )
+
+        JarOutputStream(Files.newOutputStream(artifactDir.resolve("$artifactId-$version.jar"))).use { jar ->
+            jar.putNextEntry(JarEntry("marker.txt").apply { method = ZipEntry.STORED; size = 0; crc = 0 })
+            jar.closeEntry()
+        }
+    }
+
+    private fun artifactPath(groupId: String, artifactId: String, version: String): Path =
+        repositoryPath
+            .resolve(groupId.replace('.', '/'))
+            .resolve(artifactId)
+            .resolve(version)
+            .resolve("$artifactId-$version.jar")
+
+    private companion object {
+        const val GROUP_ID = "test.mavenlens"
+    }
+}
