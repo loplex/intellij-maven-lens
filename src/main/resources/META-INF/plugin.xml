@@ -5,12 +5,9 @@
     <vendor>loplex</vendor>
     <description><![CDATA[
         <p>
-            <b>Maven Lens</b> brings transparency to your Maven build configuration by making
-            hidden plugin dependencies visible inside IntelliJ IDEA.
-        </p>
-        <p>
-            Perfect for debugging build extensions, exploring plugin code, and enabling full IDE
-            code completion for custom Maven goals.
+            Automatically exposes Maven plugins and their full transitive dependency graph as
+            IntelliJ project libraries. Perfect for debugging build extensions, exploring plugin
+            code, and enabling full IDE code completion for custom Maven goals.
         </p>
 
         <p>
@@ -33,8 +30,11 @@
             </li>
             <li>
                 <b>Deep Dependency Resolution:</b>
-                Resolves and attaches internal plugin dependencies (the
-                <code>&lt;dependencies&gt;</code> block inside a plugin declaration).
+                Asks the real Maven embedder to resolve each plugin's full transitive dependency
+                graph &mdash; exactly as Maven does for an actual build, including any
+                <code>&lt;dependencies&gt;</code> overrides declared on the plugin &mdash; not just
+                the artifacts declared directly. Artifacts missing from your local repository are
+                downloaded on demand.
             </li>
             <li>
                 <b>Instant Code Exploration:</b>
@@ -47,13 +47,20 @@
             How it works
         </h3>
         <p>
-            Every time you reimport your Maven project, Maven Lens scans your <code>pom.xml</code>
-            files, resolves the physical JAR locations within your local
-            <code>.m2/repository</code>, and maps them to the project structure seamlessly without
-            altering your original build files.
+            Every time you reimport your Maven project, Maven Lens asks the out-of-process Maven
+            embedder to resolve every declared plugin exactly as it would for a real build &mdash;
+            picking up the full transitive dependency graph and triggering a download for anything
+            not already in your local <code>.m2/repository</code> &mdash; then maps the resolved
+            JARs onto the project structure seamlessly, without altering your original build files.
         </p>
     ]]></description>
 
     <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.idea.maven</depends>
 
+    <projectListeners>
+        <listener
+            class="cz.loplex.intellijmavenlens.MavenDependenciesImporter"
+            topic="org.jetbrains.idea.maven.project.MavenImportListener" />
+    </projectListeners>
 </idea-plugin>
