@@ -1,6 +1,8 @@
 package cz.loplex.intellijmavenlens
 
 import com.intellij.maven.testFramework.MavenImportingTestCase
+import com.intellij.openapi.roots.LibraryOrderEntry
+import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar
 import com.intellij.testFramework.PlatformTestUtil
@@ -17,8 +19,26 @@ import java.util.zip.ZipEntry
  * The local Maven repository used by the import is redirected to a private, hermetic directory
  * pre-seeded with fake plugin/dependency JARs, so the test resolves entirely offline instead of
  * depending on real network access or the developer's `~/.m2`.
+ *
+ * The imported project uses `pom` packaging so its default lifecycle doesn't pull in the
+ * `jar`-packaging bindings (compiler/resources/surefire/jar). What's left - `maven-clean-plugin`,
+ * `maven-install-plugin`, `maven-deploy-plugin` and `maven-site-plugin` - is bound to the
+ * `clean`/`site` lifecycles Maven applies regardless of packaging, so the IDE always tries to
+ * resolve those too. Left unseeded, that means real network calls on every import:
+ * `maven-site-plugin` alone pulls in a dependency tree ~278 POMs deep (Doxia, Velocity, ...),
+ * which is what made this test take 45s-60s before this fake stand-in existed. [DEFAULT_LIFECYCLE_PLUGINS]
+ * pins the exact groupId:artifactId:version the bundled Maven distribution currently binds for
+ * those two lifecycles (see the "maven plugin resolution started: [...]" line in idea.log during
+ * an import) and pre-seeds a minimal fake for each, so none of them ever need the network. If a
+ * future IDE bump changes those default versions, an unseeded plugin just falls back to a real
+ * (slow) network resolution rather than failing the test outright - a sudden slowdown here is the
+ * signal to update this list.
  */
 class MavenDependenciesImporterTest : MavenImportingTestCase() {
+
+    override fun runInDispatchThread(): Boolean {
+        return false
+    }
 
     override fun setUp() {
         super.setUp()
@@ -29,12 +49,16 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
     fun `test attaches plugin and its internal dependency as a project library`() {
         installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
         installFakeArtifact(GROUP_ID, "sample-plugin-dep", "1.0.0")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
 
         importProject(
             """
             <groupId>$GROUP_ID</groupId>
             <artifactId>project</artifactId>
             <version>1.0.0</version>
+            <packaging>pom</packaging>
             <build>
                 <plugins>
                     <plugin>
@@ -57,22 +81,38 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
         val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(libraryName)
 
-        assertProjectLibraries(libraryName)
+        val defaultLifecyclePluginLibraryNames = DEFAULT_LIFECYCLE_PLUGINS.map { (groupId, artifactId, version) ->
+            "${MavenDependenciesImporter.LIBRARY_PREFIX}$groupId:$artifactId:$version"
+        }
+        assertProjectLibraries(libraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
         assertLibraryClassRootsContain(
             libraryName,
             artifactPath(GROUP_ID, "sample-plugin", "1.0.0"),
             artifactPath(GROUP_ID, "sample-plugin-dep", "1.0.0"),
         )
-        assertModuleLibDeps("project", libraryName)
+        // assertModuleLibDeps() asserts order, but the order plugins appear in the effective
+        // model (ours first vs. the lifecycle-injected defaults) isn't something to rely on.
+        val actualModuleLibDeps = ModuleRootManager.getInstance(getModule("project")).orderEntries
+            .filterIsInstance<LibraryOrderEntry>()
+            .mapNotNull { it.libraryName }
+        assertUnorderedElementsAreEqual(actualModuleLibDeps, listOf(libraryName) + defaultLifecyclePluginLibraryNames)
     }
 
     fun `test garbage-collects stale MavenLens libraries on reimport`() {
         installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+        val defaultLifecyclePluginLibraryNames = DEFAULT_LIFECYCLE_PLUGINS.map { (groupId, artifactId, version) ->
+            "${MavenDependenciesImporter.LIBRARY_PREFIX}$groupId:$artifactId:$version"
+        }
+
         importProject(
             """
             <groupId>$GROUP_ID</groupId>
             <artifactId>project</artifactId>
             <version>1.0.0</version>
+            <packaging>pom</packaging>
             <build>
                 <plugins>
                     <plugin>
@@ -86,7 +126,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
         )
         val oldLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(oldLibraryName)
-        assertProjectLibraries(oldLibraryName)
+        assertProjectLibraries(oldLibraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
 
         installFakeArtifact(GROUP_ID, "sample-plugin", "2.0.0", packaging = "maven-plugin")
         updateProjectPom(
@@ -94,6 +134,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             <groupId>$GROUP_ID</groupId>
             <artifactId>project</artifactId>
             <version>1.0.0</version>
+            <packaging>pom</packaging>
             <build>
                 <plugins>
                     <plugin>
@@ -110,7 +151,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
         val newLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:2.0.0"
         awaitLibrary(newLibraryName)
 
-        assertProjectLibraries(newLibraryName)
+        assertProjectLibraries(newLibraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
     }
 
     private fun awaitLibrary(libraryName: String) {
@@ -167,5 +208,17 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
 
     private companion object {
         const val GROUP_ID = "test.mavenlens"
+
+        /**
+         * The plugins the bundled Maven distribution binds to the `clean` and `site` lifecycles
+         * for every project regardless of packaging - see the class doc comment. Coordinates and
+         * versions taken from the "maven plugin resolution started: [...]" line in idea.log.
+         */
+        val DEFAULT_LIFECYCLE_PLUGINS = listOf(
+            Triple("org.apache.maven.plugins", "maven-clean-plugin", "3.2.0"),
+            Triple("org.apache.maven.plugins", "maven-install-plugin", "3.1.2"),
+            Triple("org.apache.maven.plugins", "maven-deploy-plugin", "3.1.2"),
+            Triple("org.apache.maven.plugins", "maven-site-plugin", "3.12.1"),
+        )
     }
 }
