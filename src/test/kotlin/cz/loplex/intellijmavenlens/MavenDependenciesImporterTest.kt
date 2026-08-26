@@ -216,6 +216,174 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
         )
     }
 
+    fun `test multi-module reactor shares a single library and order entry across modules`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        val modulePluginXml = """
+            <parent>
+                <groupId>$GROUP_ID</groupId>
+                <artifactId>project</artifactId>
+                <version>1.0.0</version>
+            </parent>
+            <packaging>pom</packaging>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+        """.trimIndent()
+        createModulePom("module-a", "<artifactId>module-a</artifactId>\n$modulePluginXml")
+        createModulePom("module-b", "<artifactId>module-b</artifactId>\n$modulePluginXml")
+
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <modules>
+                <module>module-a</module>
+                <module>module-b</module>
+            </modules>
+            """.trimIndent()
+        )
+
+        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        val library = LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName)
+        assertNotNull(library)
+
+        for (moduleName in listOf("module-a", "module-b")) {
+            val orderEntryLibrary = ModuleRootManager.getInstance(getModule(moduleName)).orderEntries
+                .filterIsInstance<LibraryOrderEntry>()
+                .first { it.libraryName == libraryName }
+                .library
+            assertSame(
+                "Modules sharing the same plugin must reference the exact same Library instance",
+                library,
+                orderEntryLibrary,
+            )
+        }
+    }
+
+    fun `test plugin version inherited from parent pluginManagement is resolved`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        createModulePom(
+            "parent",
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>parent</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <build>
+                <pluginManagement>
+                    <plugins>
+                        <plugin>
+                            <groupId>$GROUP_ID</groupId>
+                            <artifactId>sample-plugin</artifactId>
+                            <version>1.0.0</version>
+                        </plugin>
+                    </plugins>
+                </pluginManagement>
+            </build>
+            """.trimIndent()
+        )
+
+        // The child declares the plugin with no <version> at all - the effective version must
+        // come from the parent's <pluginManagement>, exactly like IntelliJ's Maven model resolves it.
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <parent>
+                <groupId>$GROUP_ID</groupId>
+                <artifactId>parent</artifactId>
+                <version>1.0.0</version>
+                <relativePath>parent/pom.xml</relativePath>
+            </parent>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                    </plugin>
+                </plugins>
+            </build>
+            """.trimIndent()
+        )
+
+        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        val defaultLifecyclePluginLibraryNames = DEFAULT_LIFECYCLE_PLUGINS.map { (groupId, artifactId, version) ->
+            "${MavenDependenciesImporter.LIBRARY_PREFIX}$groupId:$artifactId:$version"
+        }
+        assertProjectLibraries(libraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
+    }
+
+    fun `test plugin is silently skipped when its jar cannot be resolved in the local repository`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        // Simulates a missing/corrupt local-repo artifact: the plugin's POM is present (so Maven's
+        // own model resolution succeeds) but its JAR is not, which is what locateArtifactJar() must
+        // tolerate rather than throwing.
+        installFakeArtifact(GROUP_ID, "unresolvable-plugin", "1.0.0", packaging = "maven-plugin", withJar = false)
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>unresolvable-plugin</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+            """.trimIndent()
+        )
+
+        val resolvableLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(resolvableLibraryName)
+
+        val unresolvableLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:unresolvable-plugin:1.0.0"
+        assertNull(
+            "A plugin whose JAR can't be found in the local repository must not get a library",
+            LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(unresolvableLibraryName),
+        )
+        assertFalse(
+            "The module must not gain an order entry for a plugin that was never resolved",
+            ModuleRootManager.getInstance(getModule("project")).orderEntries
+                .filterIsInstance<LibraryOrderEntry>()
+                .any { it.libraryName == unresolvableLibraryName },
+        )
+    }
+
     private fun awaitLibrary(libraryName: String) {
         PlatformTestUtil.waitWithEventsDispatching(
             { "Maven Lens never attached library $libraryName" },
@@ -233,8 +401,19 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
         }
     }
 
-    /** Writes a minimal valid `pom.xml` + non-empty `.jar` for `groupId:artifactId:version` into the fake local repository. */
-    private fun installFakeArtifact(groupId: String, artifactId: String, version: String, packaging: String = "jar") {
+    /**
+     * Writes a minimal valid `pom.xml` for `groupId:artifactId:version` into the fake local
+     * repository, plus a non-empty `.jar` alongside it unless [withJar] is false - used to
+     * simulate a missing/corrupt local-repo artifact (POM present, JAR not) without touching the
+     * network.
+     */
+    private fun installFakeArtifact(
+        groupId: String,
+        artifactId: String,
+        version: String,
+        packaging: String = "jar",
+        withJar: Boolean = true,
+    ) {
         val artifactDir = repositoryPath
             .resolve(groupId.replace('.', '/'))
             .resolve(artifactId)
@@ -254,6 +433,10 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             </project>
             """.trimIndent()
         )
+
+        if (!withJar) {
+            return
+        }
 
         JarOutputStream(Files.newOutputStream(artifactDir.resolve("$artifactId-$version.jar"))).use { jar ->
             jar.putNextEntry(JarEntry("marker.txt").apply { method = ZipEntry.STORED; size = 0; crc = 0 })
