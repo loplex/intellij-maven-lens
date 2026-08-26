@@ -154,6 +154,68 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
         assertProjectLibraries(newLibraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
     }
 
+    fun `test preserves library and order entry identity across reimport with unchanged content`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+            """.trimIndent()
+        )
+        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        val libraryTable = LibraryTablesRegistrar.getInstance().getLibraryTable(project)
+        val libraryBeforeReimport = libraryTable.getLibraryByName(libraryName)
+        assertNotNull(libraryBeforeReimport)
+
+        val module = getModule("project")
+        val orderEntryLibraryBeforeReimport = ModuleRootManager.getInstance(module).orderEntries
+            .filterIsInstance<LibraryOrderEntry>()
+            .first { it.libraryName == libraryName }
+            .library
+        assertSame(libraryBeforeReimport, orderEntryLibraryBeforeReimport)
+
+        // Reimporting without touching the pom must be a no-op for MavenLens: the module's
+        // LibraryOrderEntry references a library by identity, not by name, so recreating it would
+        // strand that reference. waitForAllBackgroundActivityToCalmDown() lets the async
+        // resolve-and-apply cycle triggered by this reimport finish before asserting nothing changed.
+        importProject()
+        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+
+        val libraryAfterReimport = libraryTable.getLibraryByName(libraryName)
+        assertSame(
+            "Library instance identity must survive a reimport with unchanged content",
+            libraryBeforeReimport,
+            libraryAfterReimport,
+        )
+
+        val orderEntryLibraryAfterReimport = ModuleRootManager.getInstance(module).orderEntries
+            .filterIsInstance<LibraryOrderEntry>()
+            .first { it.libraryName == libraryName }
+            .library
+        assertSame(
+            "Module order entry must keep referencing the same Library instance",
+            libraryBeforeReimport,
+            orderEntryLibraryAfterReimport,
+        )
+    }
+
     private fun awaitLibrary(libraryName: String) {
         PlatformTestUtil.waitWithEventsDispatching(
             { "Maven Lens never attached library $libraryName" },
