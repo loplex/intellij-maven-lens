@@ -23,6 +23,12 @@ By default, IntelliJ IDEA indexes standard project dependencies, but leaves the 
 Every time you reimport your Maven project, Maven Lens asks the real Maven embedder to resolve every declared plugin exactly as it would for an actual build - picking up the full transitive dependency graph and triggering a download when an artifact isn't present locally - then maps the resolved JARs onto the project structure seamlessly without altering your original build files.
 
 
+## Building
+
+- `./gradlew buildPlugin` - builds the installable plugin ZIP into `build/distributions/`
+- `./gradlew runIde` - launches a sandboxed IDE with the plugin installed, for manual testing
+- `./gradlew test` - runs the test suite
+
 ## Installation
 
 - Manually:
