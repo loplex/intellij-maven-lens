@@ -8,6 +8,14 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    ignore:
+      # Kotlin is pinned to the line bundled with the target IntelliJ
+      # platform (see settings.gradle.kts) - only patch bumps within that
+      # line can ever be safe, so minor/major bumps are not worth PRs.
+      - dependency-name: "org.jetbrains.kotlin.jvm"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
   # Maintain dependencies for GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
