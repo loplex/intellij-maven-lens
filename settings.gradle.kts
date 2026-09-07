@@ -10,7 +10,7 @@ pluginManagement {
         // Plugin Verifier's INTERNAL_API_USAGES check. Re-check
         // plugins/Kotlin/kotlinc/build.txt in the target platform whenever
         // intellijIdea(...) is bumped, and move this pin in lockstep.
-        id("org.jetbrains.kotlin.jvm") version "2.1.20"
+        id("org.jetbrains.kotlin.jvm") version "2.1.21"
         id("org.jetbrains.changelog") version "2.5.0"
     }
 }
