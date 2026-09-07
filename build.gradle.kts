@@ -45,3 +45,10 @@ dependencies {
         testFramework(TestFrameworkType.Plugin.Maven)
     }
 }
+
+changelog {
+    // Releases are tagged with the bare version, the way publishing a release draft names the
+    // tag, so the reference-link footer of CHANGELOG.md has to be generated without the 'v'
+    // prefix this plugin would otherwise apply - those links would point at tags that do not exist
+    versionPrefix = ""
+}
