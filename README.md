@@ -17,6 +17,8 @@ By default, IntelliJ IDEA indexes standard project dependencies, but leaves the 
   the artifacts declared directly in the plugin's own POM.
 * **Instant Code Exploration:** Enables standard IDE features like "Go to Class",
   code completion, and decompilation for plugin internals.
+* **On/Off Switch:** A toggle in the Maven tool window toolbar turns the whole thing off per
+  project - and takes the attached libraries with it, rather than leaving them behind.
 
 ### How it works
 

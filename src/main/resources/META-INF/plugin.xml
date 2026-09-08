@@ -41,6 +41,11 @@
                 Enables standard IDE features like "Go to Class", code completion, and
                 decompilation for plugin internals.
             </li>
+            <li>
+                <b>On/Off Switch:</b>
+                A toggle in the Maven tool window toolbar turns the attachment off per project and
+                detaches the libraries it added; turning it back on re-resolves them right away.
+            </li>
         </ul>
 
         <h3>
@@ -57,6 +62,22 @@
 
     <depends>com.intellij.modules.platform</depends>
     <depends>org.jetbrains.idea.maven</depends>
+
+    <actions>
+        <!--
+          Maven.NavigatorActionsToolbar is the toolbar along the top of the Maven tool window;
+          the bundled Maven plugin puts its own switches (Toggle Offline Mode, Skip Tests) there,
+          which is where a user looks for a build-related toggle.
+        -->
+        <action
+            id="MavenLens.ToggleAttachment"
+            class="cz.loplex.intellijmavenlens.ToggleMavenLensAction"
+            icon="/icons/mavenLens.svg"
+            text="Attach Maven Plugin Dependencies"
+            description="Expose Maven plugins and their transitive dependencies as project libraries. Switching this off detaches the libraries Maven Lens attached.">
+            <add-to-group group-id="Maven.NavigatorActionsToolbar" anchor="after" relative-to-action="Maven.ToggleSkipTests" />
+        </action>
+    </actions>
 
     <projectListeners>
         <listener

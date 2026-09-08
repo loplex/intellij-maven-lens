@@ -1,11 +1,18 @@
 package cz.loplex.intellijmavenlens
 
 import com.intellij.maven.testFramework.MavenImportingTestCase
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.Presentation
+import com.intellij.openapi.actionSystem.impl.SimpleDataContext
+import com.intellij.openapi.components.service
 import com.intellij.openapi.roots.LibraryOrderEntry
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.TestActionEvent
+import org.jetbrains.idea.maven.project.MavenInSpecificPath
+import org.jetbrains.idea.maven.project.MavenProjectsManager
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarEntry
@@ -384,6 +391,111 @@ class MavenLensTest : MavenImportingTestCase() {
         )
     }
 
+    fun `test switching Maven Lens off detaches its libraries, switching it back on reattaches them`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        importProject(SINGLE_PLUGIN_POM)
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        setMavenLensEnabled(false)
+        awaitNoLensLibraries()
+        assertProjectLibraries()
+        assertEmpty(
+            "Switching Maven Lens off must take the module order entries with the libraries",
+            lensOrderEntryNames("project"),
+        )
+
+        // Switching back on must not wait for the next reload - it resolves the currently imported
+        // projects itself.
+        setMavenLensEnabled(true)
+        awaitLibrary(libraryName)
+        assertContain(lensOrderEntryNames("project"), libraryName)
+    }
+
+    fun `test import attaches nothing while Maven Lens is switched off`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+        project.service<MavenLensSettings>().enabled = false
+
+        importProject(SINGLE_PLUGIN_POM)
+        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+
+        assertProjectLibraries()
+        assertEmpty(lensOrderEntryNames("project"))
+    }
+
+    fun `test a resolution that fails outright leaves the attached libraries alone`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        importProject(SINGLE_PLUGIN_POM)
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        // Point Maven at a directory that is not a Maven distribution. The embedder then cannot
+        // start at all, which is what separates the two cases the service has to tell apart: a
+        // resolution that came back empty ("this project declares no plugins any more", apply it)
+        // from one that never happened ("we don't know", leave what is attached alone).
+        val manager = MavenProjectsManager.getInstance(project)
+        val brokenMavenHome = dir.resolve("not-a-maven-distribution")
+        Files.createDirectories(brokenMavenHome)
+        manager.generalSettings.setMavenHomeType(MavenInSpecificPath(brokenMavenHome.toString()))
+
+        project.service<MavenLensService>().scheduleSync(manager.projects)
+        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+
+        assertNotNull(
+            "A resolution that failed for every project must not be read as 'nothing is declared any more'",
+            LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName),
+        )
+        assertContain(lensOrderEntryNames("project"), libraryName)
+    }
+
+    fun `test the toolbar action stays hidden until the project is mavenized, then drives the switch`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        val action = ToggleMavenLensAction()
+        assertFalse(
+            "A switch for the Maven tool window has no business showing up before there is a Maven project",
+            presentationAfterUpdate(action).isEnabledAndVisible,
+        )
+
+        importProject(SINGLE_PLUGIN_POM)
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        assertTrue(presentationAfterUpdate(action).isEnabledAndVisible)
+        assertTrue("Maven Lens is on by default, so the switch has to read as on", action.isSelected(actionEvent(action)))
+
+        // Driving the action, rather than the settings service the other toggle tests use, is the
+        // point here: it is the only check that the toolbar button is wired to the service at all.
+        action.setSelected(actionEvent(action), false)
+        assertFalse(project.service<MavenLensSettings>().enabled)
+        awaitNoLensLibraries()
+        assertFalse(action.isSelected(actionEvent(action)))
+
+        action.setSelected(actionEvent(action), true)
+        awaitLibrary(libraryName)
+        assertTrue(action.isSelected(actionEvent(action)))
+    }
+
+    private fun actionEvent(action: ToggleMavenLensAction): AnActionEvent =
+        TestActionEvent.createTestEvent(action, SimpleDataContext.getProjectContext(project))
+
+    private fun presentationAfterUpdate(action: ToggleMavenLensAction): Presentation =
+        actionEvent(action).also { action.update(it) }.presentation
+
     /**
      * [PlatformTestUtil.waitWithEventsDispatching] requires being called from the EDT (it pumps the
      * Swing event queue itself while waiting). This test runs off the EDT ([runInDispatchThread] is
@@ -391,15 +503,38 @@ class MavenLensTest : MavenImportingTestCase() {
      * own queue independently in the background - including the `invokeLater` that runs
      * [MavenDependenciesImporter]'s `onSuccess` - so a plain poll from this thread is enough.
      */
-    private fun awaitLibrary(libraryName: String) {
+    private fun awaitLibrary(libraryName: String) =
+        await("Maven Lens never attached library $libraryName") {
+            LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName) != null
+        }
+
+    private fun awaitNoLensLibraries() =
+        await("Maven Lens never detached its libraries") {
+            LibraryTablesRegistrar.getInstance().getLibraryTable(project).libraries
+                .none { it.name?.startsWith(MavenLensService.LIBRARY_PREFIX) == true }
+        }
+
+    private fun await(failureMessage: String, condition: () -> Boolean) {
         val deadlineMs = System.currentTimeMillis() + 30_000
-        while (LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName) == null) {
+        while (!condition()) {
             if (System.currentTimeMillis() > deadlineMs) {
-                fail("Maven Lens never attached library $libraryName")
+                fail(failureMessage)
             }
             Thread.sleep(50)
         }
     }
+
+    /** Flips the switch the toolbar action drives, and applies it the same way the action does. */
+    private fun setMavenLensEnabled(enabled: Boolean) {
+        project.service<MavenLensSettings>().enabled = enabled
+        project.service<MavenLensService>().scheduleApplyEnabledState()
+    }
+
+    private fun lensOrderEntryNames(moduleName: String): List<String> =
+        ModuleRootManager.getInstance(getModule(moduleName)).orderEntries
+            .filterIsInstance<LibraryOrderEntry>()
+            .mapNotNull { it.libraryName }
+            .filter { it.startsWith(MavenLensService.LIBRARY_PREFIX) }
 
     private fun assertLibraryClassRootsContain(libraryName: String, vararg expectedJars: Path) {
         val library = LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName)
@@ -462,6 +597,23 @@ class MavenLensTest : MavenImportingTestCase() {
 
     private companion object {
         const val GROUP_ID = "test.mavenlens"
+
+        /** A project declaring exactly one resolvable plugin - enough for the toggle tests. */
+        val SINGLE_PLUGIN_POM = """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+        """.trimIndent()
 
         /**
          * The plugins the bundled Maven distribution binds to the `clean` and `site` lifecycles
