@@ -13,8 +13,8 @@ import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
 
 /**
- * End-to-end test driving a real (embedded) Maven import through [MavenDependenciesImporter],
- * exactly as the IDE would after a `pom.xml` reload.
+ * End-to-end test driving a real (embedded) Maven import through [MavenDependenciesImporter] and
+ * [MavenLensService], exactly as the IDE would after a `pom.xml` reload.
  *
  * The local Maven repository used by the import is redirected to a private, hermetic directory
  * pre-seeded with fake plugin/dependency JARs, so the test resolves entirely offline instead of
@@ -34,7 +34,7 @@ import java.util.zip.ZipEntry
  * (slow) network resolution rather than failing the test outright - a sudden slowdown here is the
  * signal to update this list.
  */
-class MavenDependenciesImporterTest : MavenImportingTestCase() {
+class MavenLensTest : MavenImportingTestCase() {
 
     override fun runInDispatchThread(): Boolean {
         return false
@@ -78,11 +78,11 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             """.trimIndent()
         )
 
-        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(libraryName)
 
         val defaultLifecyclePluginLibraryNames = DEFAULT_LIFECYCLE_PLUGINS.map { (groupId, artifactId, version) ->
-            "${MavenDependenciesImporter.LIBRARY_PREFIX}$groupId:$artifactId:$version"
+            "${MavenLensService.LIBRARY_PREFIX}$groupId:$artifactId:$version"
         }
         assertProjectLibraries(libraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
         assertLibraryClassRootsContain(
@@ -104,7 +104,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
         }
         val defaultLifecyclePluginLibraryNames = DEFAULT_LIFECYCLE_PLUGINS.map { (groupId, artifactId, version) ->
-            "${MavenDependenciesImporter.LIBRARY_PREFIX}$groupId:$artifactId:$version"
+            "${MavenLensService.LIBRARY_PREFIX}$groupId:$artifactId:$version"
         }
 
         importProject(
@@ -124,7 +124,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             </build>
             """.trimIndent()
         )
-        val oldLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        val oldLibraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(oldLibraryName)
         assertProjectLibraries(oldLibraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
 
@@ -148,7 +148,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
         )
         importProject()
 
-        val newLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:2.0.0"
+        val newLibraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:2.0.0"
         awaitLibrary(newLibraryName)
 
         assertProjectLibraries(newLibraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
@@ -177,7 +177,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             </build>
             """.trimIndent()
         )
-        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(libraryName)
 
         val libraryTable = LibraryTablesRegistrar.getInstance().getLibraryTable(project)
@@ -255,7 +255,7 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             """.trimIndent()
         )
 
-        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(libraryName)
 
         val library = LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName)
@@ -326,11 +326,11 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             """.trimIndent()
         )
 
-        val libraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(libraryName)
 
         val defaultLifecyclePluginLibraryNames = DEFAULT_LIFECYCLE_PLUGINS.map { (groupId, artifactId, version) ->
-            "${MavenDependenciesImporter.LIBRARY_PREFIX}$groupId:$artifactId:$version"
+            "${MavenLensService.LIBRARY_PREFIX}$groupId:$artifactId:$version"
         }
         assertProjectLibraries(libraryName, *defaultLifecyclePluginLibraryNames.toTypedArray())
     }
@@ -368,10 +368,10 @@ class MavenDependenciesImporterTest : MavenImportingTestCase() {
             """.trimIndent()
         )
 
-        val resolvableLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        val resolvableLibraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(resolvableLibraryName)
 
-        val unresolvableLibraryName = "${MavenDependenciesImporter.LIBRARY_PREFIX}$GROUP_ID:unresolvable-plugin:1.0.0"
+        val unresolvableLibraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:unresolvable-plugin:1.0.0"
         assertNull(
             "A plugin whose JAR can't be found in the local repository must not get a library",
             LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(unresolvableLibraryName),
