@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="16" height="16">
+  <!--
+    Toolbar icon (16x16) for the Maven Lens toggle: a plug with a magnifier held in front of
+    its bottom right corner. The plug is the platform's own word for "plugin" - both
+    expui/nodes/plugin.svg and expui/build/mavenPlugin.svg draw it this way - and the lens is
+    the plugin's own mark. Maven itself is left out: the button lives in the Maven tool window,
+    so the window already says it.
+
+    The plug faces right, cap on the left and prongs running out to the right edge. That is
+    what frees the bottom right corner for the lens: the only ink down there is the lower
+    prong, so the ring has room to sit without anything having to be moved out of its way.
+
+    Nothing is woven. The lens is simply painted last and so covers what it crosses - the
+    prong and the body's corner. Its fill is translucent, which leaves the plug visible
+    through the glass: a magnifier one can see through says "look at this" rather than
+    "replace this".
+
+    Both fills sit below their own outlines, and the plug's below everything, so the lens's
+    glass tints the plug's strokes instead of being hidden by them.
+
+    The whole mark is held inside the box: the body's cap at x=2.4, its roof at y=1.4, the
+    prongs at x=15 and the ring's floor at y=13.9, which with their stroke widths puts the
+    outermost ink at 1.65 / 14.65, with only the handle's corner reaching 15.4 - clear of the
+    edge, where a flush stroke would look clipped against the neighbouring toolbar buttons.
+  -->
+
+  <!-- Plug: fill under its own outline, body to the left, prongs out to the right edge. -->
+  <path d="M9.4 1.4 H6.4 A4 5 0 0 0 6.4 11.4 H9.4 Z" fill="#CED0D6" fill-opacity="0.16"/>
+  <g stroke="#CED0D6" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <path d="M15 4.1 H9.4"/><path d="M15 8.7 H9.4"/>
+    <path d="M9.4 1.4 H6.4 A4 5 0 0 0 6.4 11.4 H9.4 Z"/>
+  </g>
+
+  <!-- Lens in front, in the corner: glass first, then the ring and handle over everything. -->
+  <circle cx="10.9" cy="10.9" r="3" fill="#548AF7" fill-opacity="0.22"/>
+  <g stroke="#548AF7" fill="none" stroke-linecap="butt">
+    <circle cx="10.9" cy="10.9" r="3" stroke-width="1.5"/>
+    <path d="M13 13 L14.75 14.75" stroke-width="1.9"/>
+  </g>
+</svg>

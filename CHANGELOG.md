@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Per-project on/off switch in the Maven tool window toolbar: switching it off detaches every `MavenLens:` library, switching it back on re-resolves the imported projects immediately instead of waiting for the next Maven reload
+
 ## [0.1.0] - 2026-09-13
 
 ### Added

@@ -6,6 +6,7 @@ import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.module.Module
+import com.intellij.openapi.module.ModuleManager
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.roots.LibraryOrderEntry
 import com.intellij.openapi.roots.ModifiableRootModel
@@ -21,7 +22,10 @@ import com.intellij.platform.ide.progress.withBackgroundProgress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.jetbrains.idea.maven.buildtool.MavenLogEventHandler
 import org.jetbrains.idea.maven.model.MavenArtifact
 import org.jetbrains.idea.maven.model.MavenPlugin
@@ -40,29 +44,71 @@ import java.nio.file.Path
  * (transitively, the same way Maven resolves it for a real build) and keeping the resulting
  * `MavenLens:` project libraries in sync with what was resolved.
  *
- * [MavenDependenciesImporter] drives it from Maven's import listener. Being a service also gives
- * the work a coroutine scope tied to the project's lifecycle, so a resolve gets cancelled instead
- * of running on against a project that is already closing.
+ * [MavenDependenciesImporter] drives it from Maven's import listener, [ToggleMavenLensAction] from
+ * the Maven tool window toolbar; both go through [scheduleSync]/[scheduleApplyEnabledState] so the
+ * work runs on this service's own scope, tied to the project's lifecycle.
  */
 @Service(Service.Level.PROJECT)
 class MavenLensService(private val project: Project, private val scope: CoroutineScope) {
 
     /**
-     * Syncs the libraries for a finished Maven import.
+     * Serializes the resolve/attach and detach cycles: a toggle flipped while an import-triggered
+     * resolve is still running must not end up racing it, or the losing side's write action would
+     * decide the final state.
+     */
+    private val mutex = Mutex()
+    private var currentJob: Job? = null
+
+    /**
+     * Syncs the libraries for a finished Maven import, unless the user switched Maven Lens off.
      *
      * `importFinished` fires synchronously from inside Maven's own import coroutine, and resolving
      * now suspends on that same embedder/coroutine machinery (see [resolvePluginLibraries]).
      * Scheduling the work - rather than blocking the caller - lets the listener return immediately.
      */
     fun scheduleSync(importedProjects: Collection<MavenProject>) {
-        scope.launch(Dispatchers.Default) {
-            resolveAndApply(importedProjects)
+        if (!project.service<MavenLensSettings>().enabled) {
+            LOG.debug("Maven Lens is disabled for this project, skipping the post-import sync.")
+            return
+        }
+        schedule { resolveAndApply(importedProjects) }
+    }
+
+    /**
+     * Brings the project in line with the current [MavenLensSettings.enabled] value: resolves and
+     * attaches everything right away when switched on (so enabling doesn't sit idle until the next
+     * reload), and drops every attached library when switched off.
+     */
+    fun scheduleApplyEnabledState() {
+        if (project.service<MavenLensSettings>().enabled) {
+            schedule { resolveAndApply(MavenProjectsManager.getInstance(project).projects) }
+        } else {
+            schedule { applyToProject(emptyMap()) }
+        }
+    }
+
+    /**
+     * Cancels whatever cycle is still in flight before starting the next one - an import that is
+     * immediately followed by another import, or by a toggle, has nothing to gain from finishing
+     * the superseded resolve. [mutex] then keeps the write actions themselves in submission order,
+     * since cancellation cannot interrupt a write action that already started.
+     */
+    @Synchronized
+    private fun schedule(block: suspend () -> Unit) {
+        currentJob?.cancel()
+        currentJob = scope.launch(Dispatchers.Default) {
+            mutex.withLock { block() }
         }
     }
 
     private suspend fun resolveAndApply(importedProjects: Collection<MavenProject>) {
+        if (importedProjects.isEmpty()) {
+            return
+        }
+
         val manager = MavenProjectsManager.getInstance(project)
         val moduleLibraries = LinkedHashMap<Module, List<ResolvedLibrary>>()
+        var resolutionFailed = false
 
         withBackgroundProgress(project, "Maven Lens: Resolving plugin dependencies", true) {
             val embedderWrappers = project.service<MavenEmbedderWrappersManager>().createMavenEmbedderWrappers()
@@ -78,6 +124,7 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
                         throw e
                     } catch (e: Exception) {
                         LOG.warn("Failed to resolve Maven plugin dependencies for ${mavenProject.displayName}", e)
+                        resolutionFailed = true
                         emptyList()
                     }
                     if (libraries.isNotEmpty()) {
@@ -87,8 +134,12 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
             }
         }
 
-        if (moduleLibraries.isEmpty()) {
-            LOG.debug("No resolvable Maven plugin dependencies found, nothing to attach.")
+        // Nothing resolved *and* something blew up: treat it as "we don't know" rather than "there
+        // is nothing", and leave the previously attached libraries alone. An empty result without
+        // any failure is a real answer - no plugin is declared any more - and has to be applied, or
+        // libraries for plugins that were just removed from the pom would linger forever.
+        if (resolutionFailed && moduleLibraries.isEmpty()) {
+            LOG.warn("Maven plugin dependency resolution failed for every imported project, keeping the current libraries.")
             return
         }
         applyToProject(moduleLibraries)
@@ -167,7 +218,9 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
 
     /**
      * Syncs every "MavenLens:" project library with the resolved plugin data and attaches them
-     * to the classpath of the modules they belong to.
+     * to the classpath of the modules they belong to. An empty [moduleLibraries] is a valid input
+     * meaning "nothing is resolved any more", which detaches everything Maven Lens ever added -
+     * that is exactly what switching the plugin off does.
      *
      * A library whose name and class roots already match a resolved plugin is left untouched
      * rather than removed and recreated: module [LibraryOrderEntry] instances reference a library
@@ -175,7 +228,7 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
      * previously-added order entry as a broken reference the moment the old instance is removed
      * from the table. Only libraries that actually changed (or no longer correspond to any
      * resolved plugin) are removed/recreated; module order entries are diffed the same way, by
-     * name, against what this import actually resolved.
+     * name, against what this cycle actually resolved.
      *
      * Everything is prepared first (library table changes, per-module [ModifiableRootModel]s with
      * their library entries added) and only committed once none of that preparation has thrown -
@@ -230,17 +283,25 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
                     }
                 }
 
-                for ((module, libraries) in moduleLibraries) {
+                // Every module is visited, not just the ones something was resolved for: a module
+                // that lost its last plugin - or the whole project, when Maven Lens is switched
+                // off - still carries order entries that have to go with the libraries above.
+                for (module in ModuleManager.getInstance(project).modules) {
                     if (module.isDisposed) {
                         continue
                     }
 
-                    val rootModel = ModuleRootManager.getInstance(module).modifiableModel
+                    val libraries = moduleLibraries[module].orEmpty()
+                    val wantedNames = libraries.mapTo(HashSet()) { it.name }
+                    val rootManager = ModuleRootManager.getInstance(module)
+                    if (!needsUpdate(rootManager, wantedNames, activeLibraries)) {
+                        continue
+                    }
+
+                    val rootModel = rootManager.modifiableModel
                     preparedRootModels += rootModel
 
-                    val wantedNames = libraries.mapTo(HashSet()) { it.name }
-
-                    // Drop order entries for libraries this import no longer resolves for this
+                    // Drop order entries for libraries this cycle no longer resolves for this
                     // module (dropped plugin, or a library that got recreated above).
                     for (entry in rootModel.orderEntries) {
                         val libraryName = (entry as? LibraryOrderEntry)?.libraryName ?: continue
@@ -255,6 +316,8 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
                         .filterIsInstance<LibraryOrderEntry>()
                         .mapNotNullTo(HashSet()) { it.libraryName }
 
+                    // Iterating the resolved list rather than wantedNames keeps the entries in
+                    // the order the plugins were resolved in, instead of a hash set's order.
                     for (resolved in libraries) {
                         if (resolved.name in alreadyPresent) {
                             continue
@@ -274,7 +337,7 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
                 LOG.info(
                     "Maven Lens synced ${activeLibraries.size} plugin librar" +
                         (if (activeLibraries.size == 1) "y" else "ies") +
-                        " across ${moduleLibraries.size} module(s)."
+                        ", updating ${preparedRootModels.size} module(s)."
                 )
             } catch (e: Throwable) {
                 for (rootModel in preparedRootModels) {
@@ -286,6 +349,28 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
                 throw e
             }
         }
+    }
+
+    /**
+     * Whether [rootManager]'s module actually differs from what was resolved for it. Obtaining a
+     * [ModifiableRootModel] is not free and every one of them has to be committed or disposed, so
+     * the modules that have nothing to change - the common case, since most re-imports resolve
+     * exactly what is already attached - are skipped before one is created.
+     */
+    private fun needsUpdate(
+        rootManager: ModuleRootManager,
+        wantedNames: Set<String>,
+        activeLibraries: Map<String, Library>,
+    ): Boolean {
+        val ownEntries = rootManager.orderEntries
+            .filterIsInstance<LibraryOrderEntry>()
+            .filter { it.libraryName?.startsWith(LIBRARY_PREFIX) == true }
+
+        val hasStaleEntry = ownEntries.any {
+            it.libraryName !in wantedNames || activeLibraries[it.libraryName] !== it.library
+        }
+        val presentNames = ownEntries.mapNotNullTo(HashSet()) { it.libraryName }
+        return hasStaleEntry || wantedNames.any { it !in presentNames }
     }
 
     companion object {
