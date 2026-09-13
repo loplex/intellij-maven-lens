@@ -56,14 +56,30 @@ jobs:
 
           ./gradlew patchChangelog --release-note-file=$RELEASE_NOTE
 
-      # Publish the plugin to JetBrains Marketplace
+      # Publish the plugin to JetBrains Marketplace.
+      #
+      # The first version of a new plugin has to be uploaded by hand - the Marketplace API can
+      # only add an update to a listing that already exists - so on that first release this task
+      # is bound to report the version as already present, and would take the steps below it down
+      # with it: the release asset and the changelog pull request, neither of which has anything
+      # to do with the Marketplace. Exactly that one message is tolerated here; every other
+      # failure - bad token, signing, a rejected upload - still fails the job.
       - name: Publish Plugin
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
           CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
-        run: ./gradlew publishPlugin
+        run: |
+          OUTPUT=$(./gradlew publishPlugin 2>&1) && STATUS=0 || STATUS=$?
+          echo "$OUTPUT"
+
+          if [ "$STATUS" -ne 0 ] && grep -q 'already contains version' <<< "$OUTPUT"; then
+            echo "::warning::This version is already on the Marketplace - it was uploaded manually. Skipping the upload."
+            exit 0
+          fi
+
+          exit "$STATUS"
 
       # Upload an artifact as a release asset
       - name: Upload Release Asset
