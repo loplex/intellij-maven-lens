@@ -1,6 +1,7 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.models.ProductRelease
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask.FailureLevel
+import java.util.Properties
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -56,7 +57,27 @@ dependencies {
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
-        intellijIdea("2025.2.6.2")
+        // The platform is the pinned release below, except on a machine that has local.properties
+        // (git-ignored) naming an IDE installation:
+        //
+        //     localIdePath = /opt/idea
+        //
+        // Everything then runs against that installation - runIde, the tests, and the Plugin
+        // Verifier via ides { current() } - and nothing is downloaded. Two things follow from it:
+        // since-build is derived from whatever build is installed there, and an IDE that updates
+        // itself moves the ground under the build. CI has no local.properties, so the version
+        // below is what the published artifact is always built against.
+        val localIdePath = providers
+            .fileContents(layout.projectDirectory.file("local.properties")).asText
+            .map { Properties().apply { load(it.reader()) }.getProperty("localIdePath").orEmpty().trim() }
+            .orElse("")
+            .get()
+
+        if (localIdePath.isEmpty()) {
+            intellijIdea("2025.2.6.2")
+        } else {
+            local(localIdePath)
+        }
         bundledPlugin("org.jetbrains.idea.maven")
         javaCompiler()
         testFramework(TestFrameworkType.Platform)

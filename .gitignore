@@ -6,3 +6,6 @@
 build/
 /.cache/
 out/
+
+# Machine-specific overrides, e.g. localIdePath (see build.gradle.kts)
+/local.properties
