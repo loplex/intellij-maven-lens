@@ -1,4 +1,5 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
+import org.jetbrains.intellij.platform.gradle.models.ProductRelease
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask.FailureLevel
 
 plugins {
@@ -24,6 +25,29 @@ intellijPlatform {
             FailureLevel.INTERNAL_API_USAGES,
             FailureLevel.OVERRIDE_ONLY_API_USAGES,
         )
+
+        ides {
+            // Left alone, this block defaults to recommended(), whose channels are RELEASE, EAP
+            // and RC. With no until-build patched into plugin.xml the upper bound is open, so that
+            // default pulls in whatever EAP is newest - a fresh ~1.5 GB download on every clean
+            // run, against a build nobody can install the plugin into yet.
+            //
+            // No version is spelled out on either branch: both inherit sinceBuild from the
+            // patched since-build, which is itself derived from the target platform.
+            if (providers.environmentVariable("CI").isPresent) {
+                // Every released build the plugin claims to support - EAP and RC dropped, since a
+                // failure there says more about the EAP than about the plugin. This is the run
+                // that decides whether a build can be published.
+                select {
+                    channels = listOf(ProductRelease.Channel.RELEASE)
+                }
+            } else {
+                // On a developer machine, verify against the platform this build already resolved:
+                // the task then downloads nothing at all. It checks less than CI does, which is
+                // the point - it is the quick answer, not the authoritative one.
+                current()
+            }
+        }
     }
 }
 
