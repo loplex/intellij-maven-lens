@@ -165,15 +165,26 @@ jobs:
           fi
 
           git commit -am "Changelog update - $VERSION"
-          git push --set-upstream origin $BRANCH
+
+          # The branch is this job's own: it never holds anything but the one changelog commit
+          # regenerated above. A re-run has to be able to replace it instead of tripping over
+          # what the previous run left behind, which is why the push is forced.
+          git push --force --set-upstream origin "$BRANCH"
 
           gh label create "$LABEL" \
             --description "Pull requests with release changelog update" \
             --force \
             || true
 
+          # A re-run pushes to the same branch, so an open pull request already shows the new
+          # commit and asking for a second one would only fail.
+          if [ "$(gh pr list --head "$BRANCH" --state open --json number --jq 'length')" -gt 0 ]; then
+            echo "::notice::A pull request for $BRANCH is already open; it now carries the updated commit."
+            exit 0
+          fi
+
           gh pr create \
             --title "Changelog update - \`$VERSION\`" \
             --body "Current pull request contains patched \`CHANGELOG.md\` file for the \`$VERSION\` version." \
             --label "$LABEL" \
-            --head $BRANCH
+            --head "$BRANCH"
