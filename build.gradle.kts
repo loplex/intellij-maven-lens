@@ -1,6 +1,7 @@
 import org.jetbrains.intellij.platform.gradle.TestFrameworkType
 import org.jetbrains.intellij.platform.gradle.models.ProductRelease
 import org.jetbrains.intellij.platform.gradle.tasks.VerifyPluginTask.FailureLevel
+import java.util.Properties
 
 plugins {
     id("org.jetbrains.kotlin.jvm")
@@ -11,6 +12,21 @@ plugins {
 kotlin {
     jvmToolchain(21)
 }
+
+// A machine that has local.properties (git-ignored) naming an IDE installation:
+//
+//     localIdePath = /opt/idea
+//
+// gets a runLocalIde task that launches the plugin in that installation, and one more IDE for the
+// Plugin Verifier to check against. It does not become the platform: the plugin is still compiled
+// and tested against the pinned release below, so what a developer machine builds is what CI
+// builds. Launching is the part that wants the current IDE; compiling against it does not work
+// anyway, since the test framework cannot compose a 2026.2 installation onto one classpath.
+val localIdePath: String = providers
+    .fileContents(layout.projectDirectory.file("local.properties")).asText
+    .map { Properties().apply { load(it.reader()) }.getProperty("localIdePath").orEmpty().trim() }
+    .orElse("")
+    .get()
 
 intellijPlatform {
     pluginVerification {
@@ -42,10 +58,16 @@ intellijPlatform {
                     channels = listOf(ProductRelease.Channel.RELEASE)
                 }
             } else {
-                // On a developer machine, verify against the platform this build already resolved:
-                // the task then downloads nothing at all. It checks less than CI does, which is
-                // the point - it is the quick answer, not the authoritative one.
+                // On a developer machine, verify against the platform this build already resolved,
+                // plus the installation local.properties names when there is one: both are on disk
+                // already, so the task downloads nothing. It checks less than CI does, which is the
+                // point - it is the quick answer, not the authoritative one. The local IDE is the
+                // interesting half, since it is usually newer than the pinned release and is what
+                // runLocalIde launches the plugin in.
                 current()
+                if (localIdePath.isNotEmpty()) {
+                    local(localIdePath)
+                }
             }
         }
     }
@@ -56,11 +78,23 @@ dependencies {
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
+        // One platform, everywhere, for everyone: what since-build is patched from, what the tests
+        // run on, and what the published artifact is compiled against. A local installation stands
+        // in for it nowhere - see localIdePath above for what it does instead.
         intellijIdea("2025.2.6.2")
         bundledPlugin("org.jetbrains.idea.maven")
         javaCompiler()
         testFramework(TestFrameworkType.Platform)
         testFramework(TestFrameworkType.Plugin.Maven)
+    }
+}
+
+// Launches the plugin in the installation local.properties names, rather than in a second copy of
+// the pinned platform. The plugin installed there is the one this build produces - compiled against
+// the pinned release - which is exactly how it reaches a user from Marketplace.
+if (localIdePath.isNotEmpty()) {
+    intellijPlatformTesting.runIde.register("runLocalIde") {
+        localPath = file(localIdePath)
     }
 }
 
