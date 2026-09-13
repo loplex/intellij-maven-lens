@@ -47,8 +47,12 @@ dependencies {
 }
 
 changelog {
+    // The reference-link footer of CHANGELOG.md is only rendered when the repository is known -
+    // without this the versionPrefix below has nothing to apply to and no links are written.
+    repositoryUrl = providers.gradleProperty("pluginRepositoryUrl")
+
     // Releases are tagged with the bare version, the way publishing a release draft names the
-    // tag, so the reference-link footer of CHANGELOG.md has to be generated without the 'v'
-    // prefix this plugin would otherwise apply - those links would point at tags that do not exist
+    // tag, so those links have to be generated without the 'v' prefix this plugin would otherwise
+    // apply - they would point at tags that do not exist
     versionPrefix = ""
 }
