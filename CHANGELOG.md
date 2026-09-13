@@ -8,6 +8,10 @@
 
 - Per-project on/off switch in the Maven tool window toolbar: switching it off detaches every `MavenLens:` library, switching it back on re-resolves the imported projects immediately instead of waiting for the next Maven reload
 
+### Changed
+
+- Maven plugin dependencies are resolved through a public API of the Maven embedder instead of an internal one, which is what JetBrains Marketplace verification requires
+
 ## [0.1.0] - 2026-09-13
 
 ### Added

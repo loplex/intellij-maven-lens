@@ -30,12 +30,10 @@ import org.jetbrains.idea.maven.buildtool.MavenLogEventHandler
 import org.jetbrains.idea.maven.model.MavenArtifact
 import org.jetbrains.idea.maven.model.MavenPlugin
 import org.jetbrains.idea.maven.model.MavenRemoteRepository
-import org.jetbrains.idea.maven.project.MavenEmbedderWrappers
-import org.jetbrains.idea.maven.project.MavenEmbedderWrappersManager
+import org.jetbrains.idea.maven.project.MavenEmbeddersManager
 import org.jetbrains.idea.maven.project.MavenProject
 import org.jetbrains.idea.maven.project.MavenProjectsManager
 import org.jetbrains.idea.maven.server.PluginResolutionRequest
-import org.jetbrains.idea.maven.utils.MavenUtil
 import java.nio.file.Files
 import java.nio.file.Path
 
@@ -111,25 +109,23 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
         var resolutionFailed = false
 
         withBackgroundProgress(project, "Maven Lens: Resolving plugin dependencies", true) {
-            val embedderWrappers = project.service<MavenEmbedderWrappersManager>().createMavenEmbedderWrappers()
-            embedderWrappers.use {
-                for (mavenProject in importedProjects) {
-                    val module = ReadAction.compute<Module?, RuntimeException> {
-                        manager.findModule(mavenProject)
-                    } ?: continue
+            val embeddersManager = manager.embeddersManager
+            for (mavenProject in importedProjects) {
+                val module = ReadAction.compute<Module?, RuntimeException> {
+                    manager.findModule(mavenProject)
+                } ?: continue
 
-                    val libraries = try {
-                        resolvePluginLibraries(mavenProject, embedderWrappers)
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (e: Exception) {
-                        LOG.warn("Failed to resolve Maven plugin dependencies for ${mavenProject.displayName}", e)
-                        resolutionFailed = true
-                        emptyList()
-                    }
-                    if (libraries.isNotEmpty()) {
-                        moduleLibraries[module] = libraries
-                    }
+                val libraries = try {
+                    resolvePluginLibraries(mavenProject, embeddersManager)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    LOG.warn("Failed to resolve Maven plugin dependencies for ${mavenProject.displayName}", e)
+                    resolutionFailed = true
+                    emptyList()
+                }
+                if (libraries.isNotEmpty()) {
+                    moduleLibraries[module] = libraries
                 }
             }
         }
@@ -151,15 +147,24 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
      * a plugin's classpath for an actual build. This picks up the plugin's own transitive
      * dependencies as well as anything declared in its `<dependencies>` block, not just the
      * directly-declared artifacts.
+     *
+     * The embedder comes from [MavenEmbeddersManager] rather than from the newer
+     * `MavenEmbedderWrappers`: the latter is marked `@ApiStatus.Internal`, and JetBrains
+     * Marketplace rejects plugins that use internal API. [MavenEmbeddersManager] is public - it
+     * only carries `@ApiStatus.Obsolete`, which the Plugin Verifier does not report - and reaches
+     * the very same [org.jetbrains.idea.maven.server.MavenEmbedderWrapper.resolvePlugins].
+     *
+     * It hands embedders out on loan from a pool keyed by base directory, so every one of them has
+     * to be given back; without the `release` below the loan is never returned and the pool starts
+     * a second embedder process for the next caller on the same directory.
      */
     private suspend fun resolvePluginLibraries(
         mavenProject: MavenProject,
-        embedderWrappers: MavenEmbedderWrappers,
+        embeddersManager: MavenEmbeddersManager,
     ): List<ResolvedLibrary> {
-        val (plugins, baseDir, remoteRepositories) = ReadAction.compute<PluginResolutionInput, RuntimeException> {
+        val (plugins, remoteRepositories) = ReadAction.compute<PluginResolutionInput, RuntimeException> {
             PluginResolutionInput(
                 mavenProject.plugins.toList(),
-                MavenUtil.getBaseDir(mavenProject.directoryFile),
                 mavenProject.remotePluginRepositories,
             )
         }
@@ -167,10 +172,14 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
             return emptyList()
         }
 
-        val embedder = embedderWrappers.getEmbedder(baseDir)
-        val resolutionRequests = plugins.map { PluginResolutionRequest(it.mavenId, remoteRepositories, true, it.dependencies) }
-        val responseByPluginId = embedder.resolvePlugins(resolutionRequests, null, MavenLogEventHandler, false)
-            .associateBy { it.mavenPluginId }
+        val embedder = embeddersManager.getEmbedder(mavenProject, MavenEmbeddersManager.FOR_DEPENDENCIES_RESOLVE)
+        val responseByPluginId = try {
+            val resolutionRequests = plugins.map { PluginResolutionRequest(it.mavenId, remoteRepositories, true, it.dependencies) }
+            embedder.resolvePlugins(resolutionRequests, null, MavenLogEventHandler, false)
+                .associateBy { it.mavenPluginId }
+        } finally {
+            embeddersManager.release(embedder)
+        }
 
         val libraries = mutableListOf<ResolvedLibrary>()
         for (plugin in plugins) {
@@ -197,7 +206,6 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
 
     private data class PluginResolutionInput(
         val plugins: List<MavenPlugin>,
-        val baseDir: Path,
         val remoteRepositories: List<MavenRemoteRepository>,
     )
 

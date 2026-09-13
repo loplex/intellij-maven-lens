@@ -13,21 +13,15 @@ kotlin {
 
 intellijPlatform {
     pluginVerification {
-        // Default failure levels are COMPATIBILITY_PROBLEMS, INTERNAL_API_USAGES and
-        // OVERRIDE_ONLY_API_USAGES. INTERNAL_API_USAGES is dropped here: resolving the
-        // transitive dependencies of a Maven plugin needs MavenEmbedderWrappersManager and
-        // MavenEmbedderWrappers, and the bundled Maven plugin marks both @ApiStatus.Internal
-        // without offering a public equivalent.
-        //
-        // The Plugin Verifier cannot mute a single internal-API usage: -ignored-problems only
-        // filters binary compatibility problems, and -suppress-internal-api-usages applies to
-        // JetBrains-authored plugins only. Suppressing the whole category is therefore the only
-        // option, which is why the two remaining levels are spelled out rather than left at
-        // their default - a newly introduced internal-API usage will not be reported anymore,
-        // so re-check the Verifier report after every platform bump and restore this level as
-        // soon as a public API covers the use case.
+        // Spelled out rather than left at the default so INTERNAL_API_USAGES cannot quietly drop
+        // off the list again. It was dropped once, to let the plugin call the Maven embedder
+        // through @ApiStatus.Internal classes, and the cost showed up only at publishing time:
+        // JetBrains Marketplace runs the Plugin Verifier itself and rejects internal-API usage
+        // outright, with no way for a plugin to opt out. A build that stays green here but fails
+        // there is worse than no check at all, so this list has to keep failing on it.
         failureLevel = listOf(
             FailureLevel.COMPATIBILITY_PROBLEMS,
+            FailureLevel.INTERNAL_API_USAGES,
             FailureLevel.OVERRIDE_ONLY_API_USAGES,
         )
     }
