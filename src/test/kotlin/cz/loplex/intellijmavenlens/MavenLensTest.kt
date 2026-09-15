@@ -4,15 +4,21 @@ import com.intellij.maven.testFramework.MavenImportingTestCase
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.Presentation
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
+import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.roots.LibraryOrderEntry
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar
+import com.intellij.openapi.vfs.JarFileSystem
+import com.intellij.openapi.vfs.LocalFileSystem
+import com.intellij.openapi.vfs.VirtualFile
+import com.intellij.testFramework.LoggedErrorProcessor
 import com.intellij.testFramework.PlatformTestUtil
+import com.intellij.testFramework.replaceService
 import com.intellij.testFramework.TestActionEvent
-import org.jetbrains.idea.maven.project.MavenInSpecificPath
 import org.jetbrains.idea.maven.project.MavenProjectsManager
+import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
 import java.util.jar.JarEntry
@@ -498,6 +504,11 @@ class MavenLensTest : MavenImportingTestCase() {
         importProject(SINGLE_PLUGIN_POM)
         PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
 
+        // Without this the two assertions below would hold just as well for an import that never
+        // ran at all, which is the same weakness the failed-resolution test above was built on.
+        assertModules("project")
+        assertNotEmpty(MavenProjectsManager.getInstance(project).projects)
+
         assertProjectLibraries()
         assertEmpty(lensOrderEntryNames("project"))
     }
@@ -512,23 +523,109 @@ class MavenLensTest : MavenImportingTestCase() {
         val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
         awaitLibrary(libraryName)
 
-        // Point Maven at a directory that is not a Maven distribution. The embedder then cannot
-        // start at all, which is what separates the two cases the service has to tell apart: a
-        // resolution that came back empty ("this project declares no plugins any more", apply it)
-        // from one that never happened ("we don't know", leave what is attached alone).
-        val manager = MavenProjectsManager.getInstance(project)
-        val brokenMavenHome = dir.resolve("not-a-maven-distribution")
-        Files.createDirectories(brokenMavenHome)
-        manager.generalSettings.setMavenHomeType(MavenInSpecificPath(brokenMavenHome.toString()))
+        // A library no resolution can ever produce. applyToProject() removes every MavenLens
+        // library the current cycle did not resolve, so this surviving is what tells "the service
+        // deliberately skipped applying" apart from "it applied an empty result" - the two cases
+        // the assertion on libraryName below cannot distinguish on its own.
+        val staleName = "${MavenLensService.LIBRARY_PREFIX}stale:stale:0"
+        plantLensLibrary(staleName)
 
-        project.service<MavenLensService>().scheduleSync(manager.projects)
-        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+        // The failure is injected rather than provoked. Misconfiguring Maven does not reach this
+        // branch: measured against IU-252.28539.54, pointing Maven at a directory that is not a
+        // Maven distribution - and emptying the embedder pool afterwards - still resolves every
+        // plugin, because resolution never needs the named distribution. A test that tried to
+        // provoke the failure that way passed while the branch it names never ran.
+        replaceResolver { _, _ -> throw IOException("injected resolution failure") }
 
+        val warnings = captureWarnings {
+            project.service<MavenLensService>().scheduleSync(MavenProjectsManager.getInstance(project).projects)
+            PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+        }
+
+        val libraryTable = LibraryTablesRegistrar.getInstance().getLibraryTable(project)
         assertNotNull(
             "A resolution that failed for every project must not be read as 'nothing is declared any more'",
-            LibraryTablesRegistrar.getInstance().getLibraryTable(project).getLibraryByName(libraryName),
+            libraryTable.getLibraryByName(libraryName),
         )
         assertContain(lensOrderEntryNames("project"), libraryName)
+        assertNotNull(
+            "applyToProject() has to be skipped entirely, not called with an empty result",
+            libraryTable.getLibraryByName(staleName),
+        )
+        assertTrue(
+            "The service has to report that it kept the libraries; it logged $warnings",
+            warnings.any { it.contains("keeping the current libraries") },
+        )
+    }
+
+    fun `test a resolution that fails for some projects applies what did resolve`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        val modulePom = """
+            <parent>
+                <groupId>$GROUP_ID</groupId>
+                <artifactId>project</artifactId>
+                <version>1.0.0</version>
+            </parent>
+            <packaging>pom</packaging>
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>sample-plugin</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+        """.trimIndent()
+        createModulePom("module-a", "<artifactId>module-a</artifactId>\n$modulePom")
+        createModulePom("module-b", "<artifactId>module-b</artifactId>\n$modulePom")
+
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <modules>
+                <module>module-a</module>
+                <module>module-b</module>
+            </modules>
+            """.trimIndent()
+        )
+
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+        awaitLibrary(libraryName)
+
+        val staleName = "${MavenLensService.LIBRARY_PREFIX}stale:stale:0"
+        plantLensLibrary(staleName)
+
+        // Only module-b resolves; everything else throws. The safety net above deliberately does
+        // not cover this: it holds the current libraries only when *nothing* resolved, so a
+        // partial failure is applied, and module-a loses what it had.
+        val resolvedRoot = jarRootOf(artifactPath(GROUP_ID, "sample-plugin", "1.0.0"))
+        replaceResolver { mavenProject, _ ->
+            if (mavenProject.mavenId.artifactId == "module-b") {
+                listOf(ResolvedLibrary(libraryName, listOf(resolvedRoot)))
+            } else {
+                throw IOException("injected resolution failure for ${mavenProject.mavenId.artifactId}")
+            }
+        }
+
+        project.service<MavenLensService>().scheduleSync(MavenProjectsManager.getInstance(project).projects)
+        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+
+        val libraryTable = LibraryTablesRegistrar.getInstance().getLibraryTable(project)
+        assertNull(
+            "A partial failure still has a real answer to apply, so the stale library has to go",
+            libraryTable.getLibraryByName(staleName),
+        )
+        assertNotNull(libraryTable.getLibraryByName(libraryName))
+        assertContain(lensOrderEntryNames("module-b"), libraryName)
+        assertEmpty(lensOrderEntryNames("module-a"))
     }
 
     fun `test the toolbar action stays hidden until the project is mavenized, then drives the switch`() {
@@ -594,6 +691,44 @@ class MavenLensTest : MavenImportingTestCase() {
             }
             Thread.sleep(50)
         }
+    }
+
+    /** Puts [resolver] in place of the real one for the remainder of the test. */
+    private fun replaceResolver(resolver: MavenPluginResolver) =
+        project.replaceService(MavenPluginResolver::class.java, resolver, testRootDisposable)
+
+    /**
+     * Creates a "MavenLens:" library that no resolution can produce, so that a later assertion can
+     * tell whether `applyToProject()` ran at all: it garbage-collects every MavenLens library the
+     * current cycle did not resolve, so this one survives only if it was never called.
+     */
+    private fun plantLensLibrary(name: String) =
+        WriteAction.runAndWait<RuntimeException> {
+            val model = LibraryTablesRegistrar.getInstance().getLibraryTable(project).modifiableModel
+            model.createLibrary(name)
+            model.commit()
+        }
+
+    /**
+     * Collects everything logged at WARN while [block] runs. The processor is a global, not a
+     * thread local, which is what makes this work at all: the service logs from its own coroutine
+     * scope, not from the test thread.
+     */
+    private fun captureWarnings(block: () -> Unit): List<String> {
+        val warnings = java.util.Collections.synchronizedList(mutableListOf<String>())
+        LoggedErrorProcessor.executeWith<RuntimeException>(object : LoggedErrorProcessor() {
+            override fun processWarn(category: String, message: String, t: Throwable?): Boolean {
+                warnings += message
+                return true
+            }
+        }) { block() }
+        return warnings
+    }
+
+    /** The JAR-filesystem root a resolved artifact becomes a library class root through. */
+    private fun jarRootOf(jarPath: Path): VirtualFile {
+        val localFile = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(jarPath)!!
+        return JarFileSystem.getInstance().getJarRootForLocalFile(localFile)!!
     }
 
     /** Flips the switch the toolbar action drives, and applies it the same way the action does. */
