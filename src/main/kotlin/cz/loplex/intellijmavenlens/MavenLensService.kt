@@ -20,9 +20,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import org.jetbrains.idea.maven.project.MavenProject
 import org.jetbrains.idea.maven.project.MavenProjectsManager
 
@@ -84,8 +88,10 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
     /**
      * Cancels whatever cycle is still in flight before starting the next one - an import that is
      * immediately followed by another import, or by a toggle, has nothing to gain from finishing
-     * the superseded resolve. [mutex] then keeps the write actions themselves in submission order,
-     * since cancellation cannot interrupt a write action that already started.
+     * the superseded resolve. [mutex] then keeps the write actions themselves in submission order.
+     *
+     * What the cancellation must not reach is the write action [applyToProject] performs; see
+     * [nonCancellableWriteAction] for what happens when it does.
      */
     @Synchronized
     private fun schedule(block: suspend () -> Unit) {
@@ -159,7 +165,10 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
      * outside that guarantee.
      */
     private suspend fun applyToProject(moduleLibraries: Map<Module, List<ResolvedLibrary>>) {
-        writeAction {
+        // A cycle superseded before it has written anything has nothing to apply - unlike one that
+        // is already writing, which [nonCancellableWriteAction] sees through to the end.
+        currentCoroutineContext().ensureActive()
+        nonCancellableWriteAction {
             val libraryTable = LibraryTablesRegistrar.getInstance().getLibraryTable(project)
             val tableModel = libraryTable.modifiableModel
             val preparedRootModels = mutableListOf<ModifiableRootModel>()
@@ -272,6 +281,22 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
             }
         }
     }
+
+    /**
+     * Runs [action] in a write action that cancelling this service's job cannot cut short.
+     *
+     * `writeAction` runs its body on the EDT inside the coroutine's context, so a job cancelled
+     * while the body is running leaves the platform looking at a cancelled job for the rest of it -
+     * and the platform then stops delivering the workspace model change halfway through, without
+     * failing the commit. The module entities land, but `LibraryLevelsTracker` never counts them,
+     * leaving the platform with modules depending on project libraries it neither tracks nor
+     * listens for. The next cycle does not repair it: those modules already hold everything, so it
+     * finds nothing to change. Measured against IU-252.28539.54, the settled state after such a
+     * cancellation was five module dependencies at level "project" against a counter of zero, with
+     * no listener left on the project library table.
+     */
+    private suspend fun nonCancellableWriteAction(action: () -> Unit) =
+        withContext(NonCancellable) { writeAction(action) }
 
     /**
      * Whether [rootManager]'s module actually differs from what was resolved for it. Obtaining a

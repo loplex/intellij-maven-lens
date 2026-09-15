@@ -4,11 +4,14 @@ import com.intellij.maven.testFramework.MavenImportingTestCase
 import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.Presentation
 import com.intellij.openapi.actionSystem.impl.SimpleDataContext
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.application.WriteAction
 import com.intellij.openapi.components.service
 import com.intellij.openapi.roots.LibraryOrderEntry
 import com.intellij.openapi.roots.ModuleRootManager
 import com.intellij.openapi.roots.OrderRootType
+import com.intellij.openapi.roots.libraries.Library
+import com.intellij.openapi.roots.libraries.LibraryTable
 import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar
 import com.intellij.openapi.vfs.JarFileSystem
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -21,6 +24,8 @@ import org.jetbrains.idea.maven.project.MavenProjectsManager
 import java.io.IOException
 import java.nio.file.Files
 import java.nio.file.Path
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import java.util.zip.ZipEntry
@@ -57,6 +62,28 @@ class MavenLensTest : MavenImportingTestCase() {
         super.setUp()
         repositoryPath = dir.resolve("local-repository")
         Files.createDirectories(repositoryPath)
+    }
+
+    /**
+     * Every test ends with the platform's library level bookkeeping agreeing with the workspace
+     * model. That is the one check the error the platform logs for this - "Unexpected value in
+     * library tracker" - cannot give: it is logged from a static logger into a shared, buffered
+     * log, so a run without it means either "nothing went wrong" or "the situation never arose".
+     * [LibraryLevelProbe] tells those apart, and checking here rather than in one test means any
+     * cycle in the suite that leaves the counter behind is caught where it happened.
+     */
+    override fun tearDown() {
+        val snapshot: LibraryLevelSnapshot
+        try {
+            PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+            snapshot = LibraryLevelProbe.snapshot(project)
+        } finally {
+            super.tearDown()
+        }
+        assertTrue(
+            "The platform's library level counter disagrees with the workspace model: $snapshot",
+            snapshot.consistent,
+        )
     }
 
     fun `test attaches plugin and its internal dependency as a project library`() {
@@ -492,6 +519,64 @@ class MavenLensTest : MavenImportingTestCase() {
         setMavenLensEnabled(true)
         awaitLibrary(libraryName)
         assertContain(lensOrderEntryNames("project"), libraryName)
+    }
+
+    fun `test a second import landing inside the attach cycle keeps the library level tracker consistent`() {
+        installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+        project.service<MavenLensSettings>().enabled = false
+
+        importProject(SINGLE_PLUGIN_POM)
+        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+        val libraryName = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:sample-plugin:1.0.0"
+
+        // The first MavenLens library appearing in the table means applyToProject has committed the
+        // library table and is about to commit the module root models. Asking for another sync from
+        // there - from a pooled thread, since that is where a finishing Maven import calls it from,
+        // and waiting until the call has been made - cancels the running cycle while its write
+        // action is halfway through, deterministically. A toolbar click cannot do this on its own:
+        // actions run on the EDT, which is the thread holding the write lock, so a click is queued
+        // until the cycle is over. A second import finishing is not, which is what this reproduces.
+        val armed = AtomicBoolean(true)
+        LibraryTablesRegistrar.getInstance().getLibraryTable(project).addListener(
+            object : LibraryTable.Listener {
+                override fun afterLibraryAdded(newLibrary: Library) {
+                    if (newLibrary.name?.startsWith(MavenLensService.LIBRARY_PREFIX) != true) {
+                        return
+                    }
+                    if (!armed.compareAndSet(true, false)) {
+                        return
+                    }
+                    val projects = MavenProjectsManager.getInstance(project).projects
+                    ApplicationManager.getApplication()
+                        .executeOnPooledThread { project.service<MavenLensService>().scheduleSync(projects) }
+                        .get(30, TimeUnit.SECONDS)
+                }
+            },
+            testRootDisposable,
+        )
+
+        setMavenLensEnabled(true)
+        awaitLibrary(libraryName)
+        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+        assertFalse("The interrupting sync never ran, so the test proves nothing", armed.get())
+
+        val snapshot = LibraryLevelProbe.snapshot(project)
+        assertEquals(
+            "The interrupted cycle must still leave every resolved plugin attached",
+            DEFAULT_LIFECYCLE_PLUGINS.size + 1,
+            snapshot.actual,
+        )
+        assertTrue(
+            "The platform's library level counter disagrees with the workspace model: $snapshot",
+            snapshot.consistent,
+        )
+        assertTrue(
+            "Modules depend on project libraries the platform no longer listens for: $snapshot",
+            snapshot.listening,
+        )
     }
 
     fun `test import attaches nothing while Maven Lens is switched off`() {
