@@ -63,6 +63,18 @@
     <depends>com.intellij.modules.platform</depends>
     <depends>org.jetbrains.idea.maven</depends>
 
+    <extensions defaultExtensionNs="com.intellij">
+        <!--
+          Registered rather than annotated with @Service so that the interface and the
+          implementation can be told apart: a test replaces the implementation to exercise
+          MavenLensService's "resolution failed, keep what is attached" branch, which cannot be
+          provoked through Maven's own configuration.
+        -->
+        <projectService
+            serviceInterface="cz.loplex.intellijmavenlens.MavenPluginResolver"
+            serviceImplementation="cz.loplex.intellijmavenlens.MavenEmbedderPluginResolver" />
+    </extensions>
+
     <actions>
         <!--
           Maven.NavigatorActionsToolbar is the toolbar along the top of the Maven tool window;

@@ -15,9 +15,6 @@ import com.intellij.openapi.roots.OrderRootType
 import com.intellij.openapi.roots.libraries.Library
 import com.intellij.openapi.roots.libraries.LibraryTablesRegistrar
 import com.intellij.openapi.util.Disposer
-import com.intellij.openapi.vfs.JarFileSystem
-import com.intellij.openapi.vfs.LocalFileSystem
-import com.intellij.openapi.vfs.VirtualFile
 import com.intellij.platform.ide.progress.withBackgroundProgress
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -26,16 +23,8 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import org.jetbrains.idea.maven.buildtool.MavenLogEventHandler
-import org.jetbrains.idea.maven.model.MavenArtifact
-import org.jetbrains.idea.maven.model.MavenPlugin
-import org.jetbrains.idea.maven.model.MavenRemoteRepository
-import org.jetbrains.idea.maven.project.MavenEmbeddersManager
 import org.jetbrains.idea.maven.project.MavenProject
 import org.jetbrains.idea.maven.project.MavenProjectsManager
-import org.jetbrains.idea.maven.server.PluginResolutionRequest
-import java.nio.file.Files
-import java.nio.file.Path
 
 /**
  * Owns everything Maven Lens does to the project model: resolving every declared Maven plugin
@@ -58,10 +47,17 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
     private var currentJob: Job? = null
 
     /**
+     * Looked up per use rather than held, so a test that swaps the service in keeps working.
+     * See [MavenPluginResolver] for why resolution is a service at all.
+     */
+    private val resolver: MavenPluginResolver
+        get() = project.service<MavenPluginResolver>()
+
+    /**
      * Syncs the libraries for a finished Maven import, unless the user switched Maven Lens off.
      *
      * `importFinished` fires synchronously from inside Maven's own import coroutine, and resolving
-     * now suspends on that same embedder/coroutine machinery (see [resolvePluginLibraries]).
+     * now suspends on that same embedder/coroutine machinery (see [MavenPluginResolver]).
      * Scheduling the work - rather than blocking the caller - lets the listener return immediately.
      */
     fun scheduleSync(importedProjects: Collection<MavenProject>) {
@@ -116,7 +112,7 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
                 } ?: continue
 
                 val libraries = try {
-                    resolvePluginLibraries(mavenProject, embeddersManager)
+                    resolver.resolve(mavenProject, embeddersManager)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -141,88 +137,6 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
         applyToProject(moduleLibraries)
     }
 
-    /**
-     * Resolves every plugin declared on [mavenProject] through the real Maven plugin-dependency
-     * resolver (the out-of-process Maven embedder), the same mechanism Maven itself uses to build
-     * a plugin's classpath for an actual build. This picks up the plugin's own transitive
-     * dependencies as well as anything declared in its `<dependencies>` block, not just the
-     * directly-declared artifacts.
-     *
-     * The embedder comes from [MavenEmbeddersManager] rather than from the newer
-     * `MavenEmbedderWrappers`: the latter is marked `@ApiStatus.Internal`, and JetBrains
-     * Marketplace rejects plugins that use internal API. [MavenEmbeddersManager] is public - it
-     * only carries `@ApiStatus.Obsolete`, which the Plugin Verifier does not report - and reaches
-     * the very same [org.jetbrains.idea.maven.server.MavenEmbedderWrapper.resolvePlugins].
-     *
-     * It hands embedders out on loan from a pool keyed by base directory, so every one of them has
-     * to be given back; without the `release` below the loan is never returned and the pool starts
-     * a second embedder process for the next caller on the same directory.
-     */
-    private suspend fun resolvePluginLibraries(
-        mavenProject: MavenProject,
-        embeddersManager: MavenEmbeddersManager,
-    ): List<ResolvedLibrary> {
-        val (plugins, remoteRepositories) = ReadAction.compute<PluginResolutionInput, RuntimeException> {
-            PluginResolutionInput(
-                mavenProject.plugins.toList(),
-                mavenProject.remotePluginRepositories,
-            )
-        }
-        if (plugins.isEmpty()) {
-            return emptyList()
-        }
-
-        val embedder = embeddersManager.getEmbedder(mavenProject, MavenEmbeddersManager.FOR_DEPENDENCIES_RESOLVE)
-        val responseByPluginId = try {
-            val resolutionRequests = plugins.map { PluginResolutionRequest(it.mavenId, remoteRepositories, true, it.dependencies) }
-            embedder.resolvePlugins(resolutionRequests, null, MavenLogEventHandler, false)
-                .associateBy { it.mavenPluginId }
-        } finally {
-            embeddersManager.release(embedder)
-        }
-
-        val libraries = mutableListOf<ResolvedLibrary>()
-        for (plugin in plugins) {
-            val response = responseByPluginId[plugin.mavenId]
-            val artifacts = LinkedHashSet<MavenArtifact>()
-            response?.pluginArtifact?.let(artifacts::add)
-            response?.pluginDependencyArtifacts?.let(artifacts::addAll)
-
-            if (artifacts.isEmpty()) {
-                LOG.debug("No artifacts resolved for plugin ${plugin.mavenId.displayString}, skipping.")
-                continue
-            }
-
-            val classRoots = artifacts.mapNotNull { locateJarRoot(it.file.toPath()) }
-            if (classRoots.isEmpty()) {
-                continue
-            }
-
-            libraries += ResolvedLibrary(libraryName(plugin), classRoots)
-        }
-
-        return libraries
-    }
-
-    private data class PluginResolutionInput(
-        val plugins: List<MavenPlugin>,
-        val remoteRepositories: List<MavenRemoteRepository>,
-    )
-
-    private fun locateJarRoot(jarPath: Path): VirtualFile? {
-        if (!Files.isRegularFile(jarPath)) {
-            LOG.debug("Resolved artifact JAR not found on disk: $jarPath")
-            return null
-        }
-
-        val localFile = LocalFileSystem.getInstance().refreshAndFindFileByNioFile(jarPath) ?: return null
-        return JarFileSystem.getInstance().getJarRootForLocalFile(localFile)
-    }
-
-    private fun libraryName(plugin: MavenPlugin): String =
-        "$LIBRARY_PREFIX${plugin.groupId}:${plugin.artifactId}:${plugin.version}"
-
-    private data class ResolvedLibrary(val name: String, val classRoots: List<VirtualFile>)
 
     /**
      * Syncs every "MavenLens:" project library with the resolved plugin data and attaches them
