@@ -1,6 +1,6 @@
 package cz.loplex.intellijmavenlens
 
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.readAction
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.openapi.vfs.JarFileSystem
 import com.intellij.openapi.vfs.LocalFileSystem
@@ -58,7 +58,7 @@ internal class MavenEmbedderPluginResolver : MavenPluginResolver {
         mavenProject: MavenProject,
         embeddersManager: MavenEmbeddersManager,
     ): List<ResolvedLibrary> {
-        val (plugins, remoteRepositories) = ReadAction.compute<PluginResolutionInput, RuntimeException> {
+        val (plugins, remoteRepositories) = readAction {
             PluginResolutionInput(
                 mavenProject.plugins.toList(),
                 mavenProject.remotePluginRepositories,

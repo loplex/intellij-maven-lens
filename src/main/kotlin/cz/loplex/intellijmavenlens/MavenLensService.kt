@@ -1,6 +1,6 @@
 package cz.loplex.intellijmavenlens
 
-import com.intellij.openapi.application.ReadAction
+import com.intellij.openapi.application.readAction
 import com.intellij.openapi.application.writeAction
 import com.intellij.openapi.components.Service
 import com.intellij.openapi.components.service
@@ -107,7 +107,7 @@ class MavenLensService(private val project: Project, private val scope: Coroutin
         withBackgroundProgress(project, "Maven Lens: Resolving plugin dependencies", true) {
             val embeddersManager = manager.embeddersManager
             for (mavenProject in importedProjects) {
-                val module = ReadAction.compute<Module?, RuntimeException> {
+                val module = readAction {
                     manager.findModule(mavenProject)
                 } ?: continue
 
