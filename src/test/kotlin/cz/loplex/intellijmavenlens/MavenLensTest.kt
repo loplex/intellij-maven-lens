@@ -281,6 +281,78 @@ class MavenLensTest : MavenImportingTestCase() {
         }
     }
 
+    fun `test a reimport after one module's pom changes keeps every module's library`() {
+        installFakeArtifact(GROUP_ID, "plugin-a", "1.0.0", packaging = "maven-plugin")
+        installFakeArtifact(GROUP_ID, "plugin-b", "1.0.0", packaging = "maven-plugin")
+        for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
+            installFakeArtifact(groupId, artifactId, version, packaging = "maven-plugin")
+        }
+
+        // A plugin per module, so each module owns a library no other module keeps alive.
+        fun modulePom(artifactId: String, pluginArtifactId: String, extra: String = "") = """
+            <artifactId>$artifactId</artifactId>
+            <parent>
+                <groupId>$GROUP_ID</groupId>
+                <artifactId>project</artifactId>
+                <version>1.0.0</version>
+            </parent>
+            <packaging>pom</packaging>
+            $extra
+            <build>
+                <plugins>
+                    <plugin>
+                        <groupId>$GROUP_ID</groupId>
+                        <artifactId>$pluginArtifactId</artifactId>
+                        <version>1.0.0</version>
+                    </plugin>
+                </plugins>
+            </build>
+        """.trimIndent()
+
+        createModulePom("module-a", modulePom("module-a", "plugin-a"))
+        createModulePom("module-b", modulePom("module-b", "plugin-b"))
+        importProject(
+            """
+            <groupId>$GROUP_ID</groupId>
+            <artifactId>project</artifactId>
+            <version>1.0.0</version>
+            <packaging>pom</packaging>
+            <modules>
+                <module>module-a</module>
+                <module>module-b</module>
+            </modules>
+            """.trimIndent()
+        )
+
+        val libraryA = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:plugin-a:1.0.0"
+        val libraryB = "${MavenLensService.LIBRARY_PREFIX}$GROUP_ID:plugin-b:1.0.0"
+        awaitLibrary(libraryA)
+        awaitLibrary(libraryB)
+
+        // Only module-a's pom changes. applyToProject() collects every MavenLens: library the
+        // current cycle did not resolve, so a sync that reported module-a alone would take
+        // module-b's library with it.
+        //
+        // Measured against IU-252.28539.54, the reimport reports the whole reactor - three
+        // projects, three modules - and MavenLens resolves all six libraries again, so nothing is
+        // at risk and this passes without the collection ever being reached. That is the point of
+        // keeping it: it does not provoke the failure, it pins the assumption the collection rests
+        // on, and turns red if a future platform starts reporting only what it re-imported.
+        createModulePom("module-a", modulePom("module-a", "plugin-a", "<description>touched</description>"))
+        importProject()
+        PlatformTestUtil.waitForAllBackgroundActivityToCalmDown()
+
+        val libraryTable = LibraryTablesRegistrar.getInstance().getLibraryTable(project)
+        assertNotNull(
+            "A reimport that did not report module-b must not collect module-b's library",
+            libraryTable.getLibraryByName(libraryB),
+        )
+        assertContain(lensOrderEntryNames("module-b"), libraryB)
+        assertNotNull(libraryTable.getLibraryByName(libraryA))
+        assertContain(lensOrderEntryNames("module-a"), libraryA)
+    }
+
+
     fun `test plugin version inherited from parent pluginManagement is resolved`() {
         installFakeArtifact(GROUP_ID, "sample-plugin", "1.0.0", packaging = "maven-plugin")
         for ((groupId, artifactId, version) in DEFAULT_LIFECYCLE_PLUGINS) {
