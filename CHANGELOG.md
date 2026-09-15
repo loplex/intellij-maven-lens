@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The plugin logo is now packaged under `META-INF/`, where the IDE's plugin list and JetBrains Marketplace look for it; until now both showed the plugin without a logo
+
 ## [0.2.0] - 2026-09-15
 
 ### Added
