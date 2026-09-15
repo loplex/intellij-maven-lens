@@ -4,13 +4,11 @@ rootProject.name = "maven-lens-ij-plugin"
 
 pluginManagement {
     plugins {
-        // Pinned to the Kotlin line bundled with the target IntelliJ platform
-        // (intellijIdea(...) in build.gradle.kts) - a newer Kotlin's coroutine
-        // codegen trips both the platform's coroutine debug-probes and the
-        // Plugin Verifier's INTERNAL_API_USAGES check. Re-check
-        // plugins/Kotlin/kotlinc/build.txt in the target platform whenever
-        // intellijIdea(...) is bumped, and move this pin in lockstep.
-        id("org.jetbrains.kotlin.jvm") version "2.1.21"
+        // PROBE: raised from the pinned 2.1.21 to ask verifyPlugin a single
+        // question - does a Kotlin this much newer than the platform's own
+        // bundled line make the plugin use platform-internal API? Revert
+        // before merging; the pin belongs on the platform's Kotlin line.
+        id("org.jetbrains.kotlin.jvm") version "2.4.10"
         id("org.jetbrains.changelog") version "2.5.0"
     }
 }
