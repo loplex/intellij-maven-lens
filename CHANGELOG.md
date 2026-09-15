@@ -12,6 +12,10 @@
 
 - Maven plugin dependencies are resolved through a public API of the Maven embedder instead of an internal one, which is what JetBrains Marketplace verification requires
 
+### Fixed
+
+- A Maven re-import finishing while the previous one was still attaching its libraries could leave the IDE no longer tracking the attached `MavenLens:` libraries, so later changes to them stopped reaching the modules that depend on them
+
 ## [0.1.0] - 2026-09-13
 
 ### Added
