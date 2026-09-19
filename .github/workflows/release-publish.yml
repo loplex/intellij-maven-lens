@@ -78,12 +78,12 @@ jobs:
             echo "::error::plugin.xml names no <id>"
             exit 1
           fi
-          prefix="$(tools/check-release.py prefix)"
+          prefix="$(.github/scripts/check-release.py prefix)"
           version="${TAG#"$prefix"}"
           # A pre-release goes to the channel its suffix names and a final release to `default`. The rule is
           # the script's - the one build.gradle.kts and Prepare use too - so that everything that touches a
           # channel agrees about what a suffix means.
-          channel="$(tools/check-release.py channel "${version}")"
+          channel="$(.github/scripts/check-release.py channel "${version}")"
           {
             echo "id=${id}"
             echo "version=${version}"
@@ -312,8 +312,8 @@ jobs:
       - name: Bump to the next version being worked on
         id: bump
         run: |
-          version="${VERSION#$(tools/check-release.py prefix)}"
-          next="$(tools/check-release.py next "$VERSION")"
+          version="${VERSION#$(.github/scripts/check-release.py prefix)}"
+          next="$(.github/scripts/check-release.py next "$VERSION")"
           echo "next=${next}" >> "$GITHUB_OUTPUT"
 
           git config user.name 'github-actions[bot]'
@@ -322,7 +322,7 @@ jobs:
           # Rewritten by the tool that also reads that line, rather than by a pattern here: a reader and a
           # writer that have to agree about how the line is written can drift apart in silence, and it is the
           # writing that stops while the reading goes on working.
-          tools/check-release.py set-version "${next}"
+          .github/scripts/check-release.py set-version "${next}"
           git commit -am "chore: start ${next%-SNAPSHOT}"
 
           # Work that landed on the default branch while the draft was waiting is merged in here, so that the
@@ -357,7 +357,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           NEXT: ${{ steps.bump.outputs.next }}
         run: |
-          version="${VERSION#$(tools/check-release.py prefix)}"
+          version="${VERSION#$(.github/scripts/check-release.py prefix)}"
           gh pr create \
             --base "${DEFAULT_BRANCH}" \
             --head "release/${version}" \

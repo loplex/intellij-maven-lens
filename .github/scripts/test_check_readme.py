@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The rules check-readme.py holds, exercised without a README to check.
 
-Run with `python3 -m unittest discover -s tools`, which is what CI does.
+Run with `python3 -m unittest discover -s .github/scripts`, which is what CI does.
 """
 
 import unittest
@@ -17,6 +17,7 @@ specification.loader.exec_module(check_readme)
 
 marketplace_references = check_readme.marketplace_references
 marketplace_problems = check_readme.marketplace_problems
+repository_root = check_readme.repository_root
 
 
 AGREEING = """
@@ -88,7 +89,10 @@ class WhetherTheReferencesAgree(unittest.TestCase):
 
 class TheReadmeInThisRepository(unittest.TestCase):
     def test_it_passes_its_own_check(self):
-        readme = Path(__file__).resolve().parent.parent / "README.md"
+        # Asked of git rather than counted upwards from this file: a path spelled as "so many
+        # directories above the test" is a claim about where the test is filed, and it goes quietly
+        # wrong the moment the file moves.
+        readme = repository_root() / "README.md"
         self.assertEqual(marketplace_problems(readme.read_text(encoding="utf-8")), [])
 
 

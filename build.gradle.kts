@@ -34,7 +34,7 @@ intellijPlatform {
         // pre-release suffix, or `default` for a final release, so that 0.3.0-beta.1 is offered only to
         // whoever subscribed to `beta` and 0.3.0 to everyone. Without this every version, pre-release or
         // not, lands on `default`. The release itself is uploaded by the Publish workflow over the
-        // Marketplace API, with the same rule as `channel_of` in tools/check-release.py - which is also
+        // Marketplace API, with the same rule as `channel_of` in .github/scripts/check-release.py - which is also
         // what marks the GitHub release and asks the Marketplace afterwards; a change here is a change there.
         channels = providers.gradleProperty("version").map {
             listOf(it.substringAfter('-', "").substringBefore('.').ifEmpty { "default" })
@@ -119,7 +119,7 @@ changelog {
     // read from there by the release tooling too. Without this the plugin applies a 'v' of its own
     // and the links point at tags that do not exist; with the fact written down twice, the links
     // and the tags could come to disagree and nothing would say so. No default, for the same reason
-    // tag_prefix() in tools/check-release.py has none: a guessed prefix is wrong in silence, and the
+    // tag_prefix() in .github/scripts/check-release.py has none: a guessed prefix is wrong in silence, and the
     // two readers of the declaration have to fail the same way when it is missing.
     versionPrefix = providers.gradleProperty("tagPrefix").orNull
         ?: error("gradle.properties does not say, in tagPrefix, what release tags are called")
