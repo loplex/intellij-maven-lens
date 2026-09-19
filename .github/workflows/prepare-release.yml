@@ -55,6 +55,14 @@ jobs:
       # Neither Java nor Gradle: the rules Build's `checks` job holds, run over the branch the release is being
       # cut from. First, because they answer in seconds and a release from a branch that fails them is not one
       # worth building.
+      # The Python the tools under tools/ are run with, declared once in .python-version and read from there
+      # by every job that runs them. Without this the runner's own python3 decides, which is somebody else's
+      # choice and moves without notice: the tests use unittest features added in 3.11, so an older default
+      # turns them into a dozen errors that say nothing about the release being checked.
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+
       - name: Check the release rules
         run: |
           python3 -m unittest discover -s tools
