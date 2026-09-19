@@ -53,7 +53,7 @@ as compatible. That follows from the build number alone; this project does not t
 - `./gradlew buildPlugin` - builds the installable plugin ZIP into `build/distributions/`
 - `./gradlew runIde` - launches a sandboxed IDE with the plugin installed, for manual testing
 - `./gradlew test` - runs the test suite
-- `python3 -m unittest discover -s tools` - runs the release-tooling tests, which need the Python named
+- `python3 -m unittest discover -s .github/scripts` - runs the release-tooling tests, which need the Python named
   in [`.python-version`](./.python-version) or newer; CI reads that same file rather than taking whatever
   the runner carries
 

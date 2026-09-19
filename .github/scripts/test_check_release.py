@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """The rules check-release.py holds, exercised without a repository to release.
 
-Run with `python3 -m unittest discover -s tools`, which is what CI does.
+Run with `python3 -m unittest discover -s .github/scripts`, which is what CI does.
 """
 
 import contextlib

@@ -55,7 +55,7 @@ jobs:
       # Neither Java nor Gradle: the rules Build's `checks` job holds, run over the branch the release is being
       # cut from. First, because they answer in seconds and a release from a branch that fails them is not one
       # worth building.
-      # The Python the tools under tools/ are run with, declared once in .python-version and read from there
+      # The Python the scripts under .github/scripts/ are run with, declared once in .python-version and read from there
       # by every job that runs them. Without this the runner's own python3 decides, which is somebody else's
       # choice and moves without notice: the tests use unittest features added in 3.11, so an older default
       # turns them into a dozen errors that say nothing about the release being checked.
@@ -65,18 +65,18 @@ jobs:
 
       - name: Check the release rules
         run: |
-          python3 -m unittest discover -s tools
-          tools/check-release.py changelog
-          tools/check-release.py ancestry
+          python3 -m unittest discover -s .github/scripts
+          .github/scripts/check-release.py changelog
+          .github/scripts/check-release.py ancestry
 
       - name: Settle what is being released
         id: version
         run: |
-          version="$(tools/check-release.py version)"
+          version="$(.github/scripts/check-release.py version)"
           # The tag's spelling is declared in gradle.properties and read back here, rather than written into
           # this file a second time where it could come to disagree with the tags the repository already has.
           # Assigned before it is echoed: a substitution inside an echo fails behind echo's own exit status.
-          prefix="$(tools/check-release.py prefix)"
+          prefix="$(.github/scripts/check-release.py prefix)"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "tag=${prefix}${version}" >> "$GITHUB_OUTPUT"
 
@@ -91,7 +91,7 @@ jobs:
           # Rewritten by the tool that also reads that line, rather than by a pattern here: a reader and a
           # writer that have to agree about how the line is written can drift apart in silence, and it is the
           # writing that stops while the reading goes on working.
-          tools/check-release.py set-version "${VERSION}"
+          .github/scripts/check-release.py set-version "${VERSION}"
           # Reads the version it has just been given, project.version being where gradle.properties lands. A
           # final release closing a pre-release train - 0.3.0 after 0.3.0-beta.1 - takes the train's notes into
           # its section as it closes the Unreleased one (the changelog plugin's combinePreReleases), so a train
@@ -182,7 +182,7 @@ jobs:
           # latest release and Publish can tell what it was handed. The channel rule is the script's, so that
           # this file and the Marketplace check agree about what a suffix means.
           prerelease=()
-          if [ "$(tools/check-release.py channel "${VERSION}")" != default ]; then
+          if [ "$(.github/scripts/check-release.py channel "${VERSION}")" != default ]; then
             prerelease=(--prerelease)
           fi
 
