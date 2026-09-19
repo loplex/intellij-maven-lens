@@ -4,6 +4,8 @@
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-19
+
 ### Fixed
 
 - The plugin logo is now packaged under `META-INF/`, where the IDE's plugin list and JetBrains Marketplace look for it; until now both showed the plugin without a logo
@@ -31,6 +33,7 @@
 - On-demand download of plugin artifacts that are missing from the local repository, the same way an actual Maven build would fetch them
 - Idempotent re-sync: unchanged `MavenLens:` libraries are left in place, and libraries no longer corresponding to any resolved plugin are removed along with their module entries, so repeated re-imports don't accumulate stale entries
 
-[Unreleased]: https://github.com/loplex/intellij-maven-lens/compare/0.2.0...HEAD
+[Unreleased]: https://github.com/loplex/intellij-maven-lens/compare/0.2.1...HEAD
+[0.2.1]: https://github.com/loplex/intellij-maven-lens/compare/0.2.0...0.2.1
 [0.2.0]: https://github.com/loplex/intellij-maven-lens/compare/0.1.0...0.2.0
 [0.1.0]: https://github.com/loplex/intellij-maven-lens/commits/0.1.0
