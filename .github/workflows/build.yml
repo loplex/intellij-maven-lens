@@ -64,6 +64,11 @@ jobs:
       # settings: the list of ways to rewrite a branch is GitHub's to extend, and this holds for all of them.
       - run: tools/check-release.py ancestry
 
+      # The README states which plugin on JetBrains Marketplace this repository is, as a numeric id repeated
+      # across two badges and the links around them. Nothing ties that number to the xmlId the plugin actually
+      # publishes under, so this asks only what can be asked offline: that every occurrence agrees.
+      - run: tools/check-readme.py marketplace
+
   # Prepare the environment and build the plugin
   build:
     name: Build
