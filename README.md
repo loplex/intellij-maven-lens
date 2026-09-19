@@ -1,45 +1,58 @@
 # Maven Lens - IntelliJ Platform Plugin
 
-![Build](https://github.com/loplex/intellij-maven-lens/workflows/Build/badge.svg)
+[![Build](https://github.com/loplex/intellij-maven-lens/actions/workflows/build.yml/badge.svg)](https://github.com/loplex/intellij-maven-lens/actions/workflows/build.yml)
+[![Version](https://img.shields.io/jetbrains/plugin/v/34153.svg)](https://plugins.jetbrains.com/plugin/34153-maven-lens)
+[![Downloads](https://img.shields.io/jetbrains/plugin/d/34153.svg)](https://plugins.jetbrains.com/plugin/34153-maven-lens)
 
-> Not yet published to JetBrains Marketplace - see [Installation](#installation) for how to try it now.
+**Maven Lens** makes the classes and dependencies of your Maven plugins visible inside IntelliJ IDEA.
 
-**Maven Lens** brings transparency to your Maven build configuration by making hidden plugin dependencies visible inside IntelliJ IDEA.
+IntelliJ IDEA indexes standard project dependencies, but leaves Maven plugins out of the Project
+View, code completion and search. Maven Lens bridges that.
 
-By default, IntelliJ IDEA indexes standard project dependencies, but leaves the classes and dependencies of Maven plugins hidden from the Project View, code completion, and search. **Maven Lens** automates this bridging process.
+- **Automatic attachment** - runs after every Maven reload/import.
+- **Plugin visibility** - registers every declared Maven plugin as a standard project library.
+- **Deep dependency resolution** - resolves each plugin's full transitive graph the way Maven does
+  for a real build, including any `<dependencies>` overrides declared on the plugin, and downloads
+  what the local repository is missing.
+- **Instant code exploration** - "Go to Class", code completion and decompilation reach plugin
+  internals.
+- **On/off switch** - a toggle in the Maven tool window toolbar detaches the libraries it attached;
+  switching it back on re-resolves them right away, without waiting for the next Maven reload.
 
-### Key Features
+## Installation
 
-* **Automatic Attachment:** Automatically triggers after every Maven reload/import.
-* **Plugin Visibility:** Registers all declared Maven plugins as standard Project Libraries.
-* **Deep Dependency Resolution:** Resolves each plugin's full transitive
-  dependency graph the same way Maven itself does for a build - not just
-  the artifacts declared directly in the plugin's own POM.
-* **Instant Code Exploration:** Enables standard IDE features like "Go to Class",
-  code completion, and decompilation for plugin internals.
-* **On/Off Switch:** A toggle in the Maven tool window toolbar turns the whole thing off per
-  project - and takes the attached libraries with it, rather than leaving them behind.
+- From inside the IDE:
 
-### How it works
+  <kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>Marketplace</kbd> > search for **Maven Lens** >
+  <kbd>Install</kbd>
 
-Every time you reimport your Maven project, Maven Lens asks the real Maven embedder to resolve every declared plugin exactly as it would for an actual build - picking up the full transitive dependency graph and triggering a download when an artifact isn't present locally - then maps the resolved JARs onto the project structure seamlessly without altering your original build files.
+- From JetBrains Marketplace:
 
+  Open the [plugin page](https://plugins.jetbrains.com/plugin/34153-maven-lens) and press <kbd>Install to ...</kbd>
+  while your IDE is running. Every published build is also downloadable from its
+  [versions page](https://plugins.jetbrains.com/plugin/34153-maven-lens/versions).
+
+- From GitHub:
+
+  Each release carries the plugin ZIP as an asset - see the
+  [latest release](https://github.com/loplex/intellij-maven-lens/releases/latest).
+
+A ZIP obtained either of the last two ways is installed with
+<kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>⚙️</kbd> > <kbd>Install plugin from disk...</kbd>
+
+### Compatibility
+
+The plugin is built against IntelliJ IDEA 2025.2 and declares no upper bound, so it is offered to
+**IntelliJ IDEA 2025.2 and newer, Community and Ultimate alike**.
+
+JetBrains Marketplace derives the same range for Android Studio and lists Otter (2025.2.1) and newer
+as compatible. That follows from the build number alone; this project does not test there.
 
 ## Building
 
 - `./gradlew buildPlugin` - builds the installable plugin ZIP into `build/distributions/`
 - `./gradlew runIde` - launches a sandboxed IDE with the plugin installed, for manual testing
 - `./gradlew test` - runs the test suite
-
-## Installation
-
-- Manually:
-
-  Download the [latest release](https://github.com/loplex/intellij-maven-lens/releases/latest) and install it manually using
-  <kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>⚙️</kbd> > <kbd>Install plugin from disk...</kbd>
-
-Once published to JetBrains Marketplace, it will also be installable directly via
-<kbd>Settings/Preferences</kbd> > <kbd>Plugins</kbd> > <kbd>Marketplace</kbd>.
 
 ## License
 
