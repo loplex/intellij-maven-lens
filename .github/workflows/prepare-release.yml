@@ -7,17 +7,36 @@ name: Prepare release
 # so a draft that is thrown away leaves the default branch as it was - no commit to revert and no tag to delete.
 # What it does leave, the branch and the draft, the next run for the same version replaces. The branch is
 # merged back by Publish, once the release has been accepted.
+#
+# Everything Build checks on a push is checked here once more: the release rules over the branch the release is
+# cut from, `check` and the Plugin Verifier over the release commit itself. This can be started on any branch,
+# and the release commit lives on a branch Build never sees, so nothing else ties the release to a run that was
+# green.
 on:
   workflow_dispatch:
 
 permissions:
   contents: write
 
+# One at a time. Two runs would race for the same release branch and the same draft, and the version check at
+# the top answers for the tags as they stood when it looked.
+concurrency:
+  group: prepare-release
+  cancel-in-progress: false
+
 jobs:
   prepare:
-    name: Build, sign and draft the release
+    name: Check, build, sign and draft the release
     runs-on: ubuntu-latest
     steps:
+      # The Plugin Verifier below downloads an IDE for every release it checks against; the runner's disk does
+      # not hold them beside what it ships with.
+      - name: Maximize Build Space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: false
+          large-packages: false
+
       - uses: actions/checkout@v7
         with:
           # The version check reads every tag to answer what may follow what.
@@ -33,30 +52,27 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      # Neither Java nor Gradle: it reads gradle.properties and the tags, and answers in milliseconds.
+      # Neither Java nor Gradle: the rules Build's `checks` job holds, run over the branch the release is being
+      # cut from. First, because they answer in seconds and a release from a branch that fails them is not one
+      # worth building.
+      - name: Check the release rules
+        run: |
+          python3 -m unittest discover -s tools
+          tools/check-release.py changelog
+          tools/check-release.py ancestry
+
       - name: Settle what is being released
         id: version
         run: |
           version="$(tools/check-release.py version)"
-          echo "version=${version}" >> "$GITHUB_OUTPUT"
           # The tag's spelling is declared in gradle.properties and read back here, rather than written into
           # this file a second time where it could come to disagree with the tags the repository already has.
-          echo "tag=$(tools/check-release.py prefix)${version}" >> "$GITHUB_OUTPUT"
+          # Assigned before it is echoed: a substitution inside an echo fails behind echo's own exit status.
+          prefix="$(tools/check-release.py prefix)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          echo "tag=${prefix}${version}" >> "$GITHUB_OUTPUT"
 
-      # A release whose notes are empty is a release nobody meant to make - the changelog entries are written as
-      # the work is done, so an empty section means the work was not written down rather than that it was nil.
-      - name: Refuse an empty Unreleased section
-        run: |
-          ./gradlew getChangelog --unreleased --no-header --no-summary --output-file=unreleased.md
-          if ! grep -q '[^[:space:]]' unreleased.md; then
-            echo "::error::The Unreleased section of CHANGELOG.md is empty; there is nothing to release"
-            exit 1
-          fi
-          rm -f unreleased.md
-
-      # Committed before anything is pushed, so that a build that fails leaves neither a branch nor a draft.
-      # A step of its own, and so a Gradle invocation of its own: getChangelog reads the file patchChangelog
-      # writes, and Gradle refuses to run the two in one build without being told which comes first.
+      # Committed before anything is pushed, so that a check that fails leaves neither a branch nor a draft.
       - name: Drop the marker and close the changelog
         env:
           VERSION: ${{ steps.version.outputs.version }}
@@ -68,13 +84,56 @@ jobs:
           # writer that have to agree about how the line is written can drift apart in silence, and it is the
           # writing that stops while the reading goes on working.
           tools/check-release.py set-version "${VERSION}"
-          # Reads the version it has just been given, project.version being where gradle.properties lands.
+          # Reads the version it has just been given, project.version being where gradle.properties lands. A
+          # final release closing a pre-release train - 0.3.0 after 0.3.0-beta.1 - takes the train's notes into
+          # its section as it closes the Unreleased one (the changelog plugin's combinePreReleases), so a train
+          # that has nothing new to say still gets a section that says what it shipped.
           ./gradlew patchChangelog
           git add gradle.properties CHANGELOG.md
           git commit -m "chore(release): ${VERSION}"
           git --no-pager show --stat
 
+      # The same section of CHANGELOG.md that the plugin's own change notes are built from, so the release page
+      # and the Marketplace listing say one thing. Read out straight after it was written, and it is what
+      # decides whether there is a release here at all: a release whose notes are empty is a release nobody
+      # meant to make - the changelog entries are written as the work is done, so nothing to say means the work
+      # was not written down rather than that it was nil. Judged on the section rather than on what stood under
+      # Unreleased, so that the one rule deciding what a section holds is the plugin's, spelled once.
+      #
+      # A Gradle invocation of its own: getChangelog reads the file patchChangelog writes, and Gradle refuses to
+      # run the two in one build without being told which comes first.
+      - name: Take the release notes out of the changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          rm -f release-notes.md
+          # An Unreleased section that was empty, with no pre-release to fold in, leaves patchChangelog with
+          # nothing to write and this with no section to read: the task fails on the missing version.
+          if ! ./gradlew getChangelog \
+                 --project-version="${VERSION}" \
+                 --no-header --no-summary \
+                 --output-file=release-notes.md \
+             || ! grep -q '[^[:space:]]' release-notes.md; then
+            echo "::error::CHANGELOG.md holds nothing for ${VERSION}: the Unreleased section was empty, so there" \
+                 "is nothing to release"
+            exit 1
+          fi
+
       - run: ./gradlew check
+
+      # The check the Marketplace runs itself before it serves a version, run here first and on the very commit
+      # that is going to be published: an internal-API usage or an incompatibility with a supported IDE build
+      # goes red here rather than after the release has been accepted. `check` does not include it, and Build
+      # never sees the release commit - it lives on release/<v>, outside Build's push filter.
+      - run: ./gradlew verifyPlugin
+
+      - name: Keep the Plugin Verifier report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: pluginVerifier-result
+          path: build/reports/pluginVerifier
+          if-no-files-found: ignore
 
       - name: Build and sign
         env:
@@ -82,17 +141,6 @@ jobs:
           PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
           PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
         run: ./gradlew signPlugin
-
-      # The same section of CHANGELOG.md that the plugin's own change notes are built from, so the release page
-      # and the Marketplace listing say one thing.
-      - name: Take the release notes out of the changelog
-        env:
-          VERSION: ${{ steps.version.outputs.version }}
-        run: |
-          ./gradlew getChangelog \
-            --project-version="${VERSION}" \
-            --no-header --no-summary \
-            --output-file=release-notes.md
 
       # Forced, because a branch of this name may be standing from a run whose draft was thrown away, and it is
       # this workflow's own: nothing else writes to it before the release is published, and once it is, the tag

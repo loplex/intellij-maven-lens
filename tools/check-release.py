@@ -96,17 +96,25 @@ def check_version(candidate: str, tags: list[str]) -> list[str]:
         return []  # Nothing to be consistent with; the first release may name itself anything valid.
 
     problems = []
-    highest = released[-1]
+    finals = [tag for tag in released if VERSION.match(tag).group(4) is None]
+    is_final = VERSION.match(candidate).group(4) is None
 
     # The base invariant, and the one the rest rests on. An IDE offers an update by comparing versions, so a
-    # release that does not outrank the last one is a release nobody is offered.
-    if precedence(candidate) <= precedence(highest):
-        problems.append(f"{candidate} does not come after {highest}, which is released already")
+    # release that does not outrank the last one is a release nobody is offered. "The last one" is the last one
+    # offered to the same people: a final release goes to everyone and has to outrank the last final release,
+    # not the pre-releases, which only their channel's subscribers ever see - so a stable hotfix 0.2.1 may go
+    # out while 0.3.0-beta.1 is open, and nobody on either channel is offered a downgrade. A pre-release goes
+    # to subscribers, who see everything, so it has to outrank the highest tag of all. The other side of that
+    # coin: while a train is open, a hotfix can go out but not be tried on a channel first - 0.2.1-rc.1 sorts
+    # below 0.3.0-beta.1 and is refused, where 0.2.1 itself passes.
+    against = finals[-1] if is_final and finals else released[-1]
+    if precedence(candidate) <= precedence(against):
+        problems.append(f"{candidate} does not come after {against}, which is released already")
 
     # The step is measured against the last *final* release rather than against the highest tag, so that a
     # pre-release train - 0.2.0-rc.1, 0.2.0-rc.2, 0.2.0 - stays inside one permitted core instead of every step
-    # having to advance it. Going backwards inside that train is what the check above is for.
-    finals = [tag for tag in released if VERSION.match(tag).group(4) is None]
+    # having to advance it. Going backwards inside that train is what the check above is for. It also means an
+    # open train cannot be abandoned for a higher core: 0.4.0 does not follow 0.2.0, whatever 0.3.0-beta.1 says.
     if finals:
         allowed = successors(core(finals[-1]))
         if core(candidate) not in allowed:

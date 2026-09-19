@@ -87,13 +87,41 @@ class ThePreReleaseTrain(unittest.TestCase):
     def test_going_backwards_inside_the_train_is_refused(self):
         self.assertTrue(check_version("0.2.0-rc.1", ["0.1.0", "0.2.0-rc.2"]))
 
-    def test_a_lower_core_is_refused_while_a_train_is_open(self):
-        """The step is measured against the last final release, which an open train does not advance - so the
-        step alone would allow 0.1.1 here. Only the ordering against the highest tag refuses it, which is why
-        both checks are kept rather than the stricter one alone."""
-        problems = check_version("0.1.1", ["0.1.0", "0.2.0-rc.1"])
+    def test_a_stable_hotfix_may_go_out_while_a_train_is_open(self):
+        """0.1.1 goes to everyone and only has to outrank the last release everyone was offered, 0.1.0. The
+        subscribers who see 0.2.0-rc.1 are not offered a downgrade by it either: 0.1.1 sorts below the rc."""
+        self.assertEqual(check_version("0.1.1", ["0.1.0", "0.2.0-rc.1"]), [])
+
+    def test_a_hotfix_does_not_close_the_train(self):
+        tags = ["0.1.0", "0.2.0-rc.1", "0.1.1"]
+        self.assertEqual(check_version("0.2.0-rc.2", tags), [])
+        self.assertEqual(check_version("0.2.0", tags), [])
+
+    def test_a_pre_release_has_to_outrank_every_tag(self):
+        """Subscribers to a channel see everything, so a pre-release below the highest tag is one they are never
+        offered - which is what the base invariant refuses."""
+        problems = check_version("0.1.2-rc.1", ["0.1.0", "0.1.1", "0.2.0-rc.1"])
         self.assertTrue(problems)
         self.assertIn("0.2.0-rc.1", problems[0])
+
+    def test_a_hotfix_cannot_be_tried_on_a_channel_while_a_train_is_open(self):
+        """The price of the rule above: 0.1.1 may go out, but 0.1.1-rc.1 sorts below 0.2.0-rc.1, so the hotfix
+        cannot be offered to a channel first. Named here so that nobody finds it out from a red run."""
+        problems = check_version("0.1.1-rc.1", ["0.1.0", "0.2.0-rc.1"])
+        self.assertTrue(problems)
+        self.assertIn("0.2.0-rc.1", problems[0])
+
+    def test_a_final_release_still_has_to_outrank_the_last_final_one(self):
+        problems = check_version("0.1.1", ["0.1.0", "0.2.0-rc.1", "0.2.0"])
+        self.assertTrue(problems)
+        self.assertIn("0.2.0", problems[0])
+
+    def test_an_open_train_cannot_be_abandoned_for_a_higher_core(self):
+        """The step is measured against the last final release, which an open train does not advance: the way
+        past 0.2.0-rc.1 is 0.2.0, not 0.3.0."""
+        problems = check_version("0.3.0", ["0.1.0", "0.2.0-rc.1"])
+        self.assertTrue(problems)
+        self.assertIn("does not follow 0.1.0", problems[0])
 
 
 class WhatFollowsARelease(unittest.TestCase):

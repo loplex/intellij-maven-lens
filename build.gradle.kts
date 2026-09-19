@@ -118,12 +118,22 @@ changelog {
     // What a release tag carries in front of the version, declared once in gradle.properties and
     // read from there by the release tooling too. Without this the plugin applies a 'v' of its own
     // and the links point at tags that do not exist; with the fact written down twice, the links
-    // and the tags could come to disagree and nothing would say so.
-    versionPrefix = providers.gradleProperty("tagPrefix").getOrElse("")
+    // and the tags could come to disagree and nothing would say so. No default, for the same reason
+    // tag_prefix() in tools/check-release.py has none: a guessed prefix is wrong in silence, and the
+    // two readers of the declaration have to fail the same way when it is missing.
+    versionPrefix = providers.gradleProperty("tagPrefix").orNull
+        ?: error("gradle.properties does not say, in tagPrefix, what release tags are called")
 }
 
 tasks {
     publishPlugin {
+        // The platform plugin makes this task depend on patchChangelog whenever the changelog plugin is applied,
+        // so that a publish closes the Unreleased section on its way. Here the release closes it itself, in
+        // prepare-release.yml, before anything is built. Left in, a publishPlugin run by hand from a branch with
+        // work under [Unreleased] would rewrite CHANGELOG.md as a side effect - before the token check or the
+        // marker check below could stop it, since a task's dependencies run before the task does.
+        setDependsOn(dependsOn.filterNot { it == "patchChangelog" })
+
         // -SNAPSHOT says the version has not been released, so it is precisely what must not be published. The
         // release workflows never run this task - Publish uploads the accepted archive over the Marketplace API
         // - so it is only ever reached by a publish run by hand, from a branch that may still carry the marker,

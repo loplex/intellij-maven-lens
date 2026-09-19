@@ -21,6 +21,13 @@ on:
         required: true
         type: string
 
+# One run per release at a time: the publish of a release and a retake of the same tag by hand would race for
+# the release notes, and two merge-backs of one branch would race for its push. Runs for different releases
+# have nothing in common and go on side by side.
+concurrency:
+  group: release-publish-${{ github.event.release.tag_name || inputs.tag }}
+  cancel-in-progress: false
+
 jobs:
   publish:
     name: Upload the accepted archive
@@ -171,8 +178,10 @@ jobs:
           for attempt in $(seq 1 10); do
             code="$(curl -sS -L -o "$served" -w '%{http_code}' "$url")" || code=000
             [ "$code" = 200 ] && break
-            echo "attempt ${attempt}: HTTP ${code}, waiting"
-            sleep 30
+            echo "attempt ${attempt}: HTTP ${code}"
+            if [ "$attempt" -lt 10 ]; then
+              sleep 30
+            fi
           done
 
           if [ "$code" != 200 ]; then
@@ -219,16 +228,24 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
         run: |
-          notes="$(gh release view "$TAG" --json body --jq '.body')"
+          # GitHub hands release notes back with CRLF line ends whatever they were written with; taken off
+          # here so that a blank line is a blank line to the patterns below.
+          notes="$(gh release view "$TAG" --json body --jq '.body' | tr -d '\r')"
           if ! printf '%s' "$notes" | grep -q 'did not complete cleanly'; then
             echo "The release carries no warning; nothing to take off."
             exit 0
           fi
-          # The block is the blockquote at the top of the notes, down to the blank line that closes it.
+          # The block is the run of blockquote lines that carries the warning's wording, wherever it stands -
+          # someone may have written above it - together with the one blank line that closes it. Any other
+          # blockquote is the release's own and is passed through as it is.
           printf '%s\n' "$notes" | awk '
-            !done && /^>/ { next }
-            !done && /^$/ { done = 1; next }
-            { done = 1; print }
+            /^>/ { block = block $0 "\n"; next }
+            block != "" {
+              if (block ~ /did not complete cleanly/) { block = ""; if ($0 == "") next }
+              else { printf "%s", block; block = "" }
+            }
+            { print }
+            END { if (block != "" && block !~ /did not complete cleanly/) printf "%s", block }
           ' | gh release edit "$TAG" --notes-file -
           echo "The warning is off ${TAG}; the check has passed."
 
@@ -241,7 +258,7 @@ jobs:
           TAG: ${{ steps.release.outputs.tag }}
           RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
-          notes="$(gh release view "$TAG" --json body --jq '.body')"
+          notes="$(gh release view "$TAG" --json body --jq '.body' | tr -d '\r')"
 
           # A re-run that fails again must not say so twice.
           if printf '%s' "$notes" | grep -q 'did not complete cleanly'; then
@@ -298,19 +315,31 @@ jobs:
 
           # Work that landed on the default branch while the draft was waiting is merged in here, so that the
           # checks on the pull request run over the tree that will land rather than over one that never
-          # existed.
-          # The changelog check is the reason: a three-way merge will put an entry added to [Unreleased] after
-          # the branch point into the released section instead, cleanly and with no conflict to stop it.
+          # existed. The changelog check is the reason: a three-way merge can put an entry added to
+          # [Unreleased] after the branch point into the released section instead - Git merges lines and cannot
+          # see that a heading is a container - and whether it does so cleanly or stops on a conflict depends
+          # on what stood around the entry.
           #
           # A merge that does conflict is left to be resolved on the pull request, which is where a conflict is
           # resolved anyway - and resolving it is itself the merge, so the checks end up over the same tree.
-          # Attempting it must not be able to fail the job: the release is out either way.
-          git merge --no-edit "origin/${DEFAULT_BRANCH}" || git merge --abort
+          # Attempting it must not be able to fail the job: the release is out either way. `--abort` undoes a
+          # merge that stopped on a conflict; a merge that never began leaves nothing to abort, and says so.
+          if ! git merge --no-edit "origin/${DEFAULT_BRANCH}"; then
+            git merge --abort 2>/dev/null || true
+            echo "::warning::origin/${DEFAULT_BRANCH} did not merge into release/${version}; the pull request" \
+                 "carries the conflict"
+          fi
 
           git push origin "release/${version}"
 
       # Merged rather than squashed, deliberately: the tag points at the release commit inside this branch, and
       # a squash would replace that commit with another, leaving the tag off the history of `main`.
+      #
+      # Opening a pull request from a workflow needs "Allow GitHub Actions to create and approve pull requests"
+      # switched on in the repository's Actions settings; it is, and without it this step is a permissions
+      # error at the very end of a release. The Build run the pull request starts is created held: a run
+      # started by the Actions bot waits for someone to press "Approve and run" on the pull request, which is
+      # said in its body so that nobody waits for a check that is waiting for them.
       - name: Offer the branch to main
         env:
           GH_TOKEN: ${{ github.token }}
@@ -329,5 +358,8 @@ jobs:
 
           Merge with a merge commit rather than a squash: \`${VERSION}\` points at the release commit in this
           branch, and a squash would leave the tag off the history of \`main\`.
+
+          The checks on this pull request are waiting to be approved, not running: a run started by the Actions
+          bot is held until someone presses **Approve and run** on the Checks tab.
           BODY
           )"
