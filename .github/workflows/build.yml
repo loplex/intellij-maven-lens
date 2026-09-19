@@ -41,6 +41,14 @@ jobs:
           # The released sections are compared against the tags that released them.
           fetch-depth: 0
 
+      # The Python the tools under tools/ are run with, declared once in .python-version and read from there
+      # by every job that runs them. Without this the runner's own python3 decides, which is somebody else's
+      # choice and moves without notice: the tests use unittest features added in 3.11, so an older default
+      # turns them into a dozen errors that say nothing about the release being checked.
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+
       - run: python3 -m unittest discover -s tools
 
       # A released section is a text that has been handed to readers - the release notes on GitHub and the

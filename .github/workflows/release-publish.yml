@@ -56,6 +56,12 @@ jobs:
         with:
           ref: ${{ steps.release.outputs.tag }}
 
+      # The Python this job runs check-release.py and the payload comparison with, declared once in
+      # .python-version rather than left to whatever the runner happens to carry.
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
+
       # Neither Java nor Gradle is set up: nothing in this job compiles. The archive was built, signed and
       # accepted already, and the Marketplace is spoken to over HTTP.
 
@@ -293,6 +299,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
+
+      # The Python this job runs check-release.py and the payload comparison with, declared once in
+      # .python-version rather than left to whatever the runner happens to carry.
+      - uses: actions/setup-python@v7
+        with:
+          python-version-file: .python-version
 
       # What follows a release is a question about versions, so it is answered where the other ones are. Counting
       # the patch up here would be wrong after a pre-release: 0.2.0-rc.1 was a step towards 0.2.0, and work goes
