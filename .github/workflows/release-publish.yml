@@ -1,0 +1,285 @@
+name: Publish the accepted release
+
+# Runs when a drafted release is published, which is the moment the release is accepted and the moment its tag
+# comes into being. It can also be started by hand against a tag that is already released, which is the way
+# back in after something here had to be put right by hand - the first upload to the Marketplace above all,
+# which is a listing `publishPlugin` cannot create and so has to be made by a person.
+#
+# Two jobs that do not wait on each other, because the things they finish are not the same thing. Uploading to
+# the Marketplace is one way the release is distributed; merging the release branch is how the repository
+# records that the release happened. A Marketplace upload that fails - as the very first one must - is no
+# reason for `main` to go on disagreeing with the tag.
+on:
+  release:
+    # `published` rather than `released`: the latter does not fire for a draft published as a pre-release, and
+    # a pre-release is published the same way as a release, to its own Marketplace channel.
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Tag of a release that is already published, to take this over again
+        required: true
+        type: string
+
+jobs:
+  publish:
+    name: Upload the accepted archive
+    runs-on: ubuntu-latest
+    permissions:
+      # Written to, rather than only read, because a failed check says so on the release itself: a run that
+      # nobody opens is a finding nobody has.
+      contents: write
+    steps:
+      # A release event carries the tag in its payload and a manual run is handed it as an input. Settled once,
+      # here, so that nothing below has to care which of the two started the run.
+      - name: Settle which release this is about
+        id: release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+        run: |
+          tag="${RELEASE_TAG:-$INPUT_TAG}"
+          if [ -z "$tag" ]; then
+            echo "::error::No tag was given and none came with the event"
+            exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ steps.release.outputs.tag }}
+
+      # The JDK Gradle runs on, which is a property of this pipeline rather than of the plugin: what a plugin
+      # compiles against is its own `jvmToolchain`, declared in its build script, and a plugin that targets
+      # something older still builds here.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # The archive built and signed from the release commit, rather than a second build of the same sources:
+      # what reaches the Marketplace is the file that was there to be downloaded and tried before it was
+      # accepted.
+      - name: Take the archive off the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          mkdir -p build/distributions
+          gh release download "$TAG" \
+            --pattern '*-signed.zip' \
+            --dir build/distributions
+          ls -l build/distributions
+
+      # Deliberately not allowed to fail the job, although its output is kept in full. What the release needs to
+      # be true is that the Marketplace ends up serving the archive that was accepted, and the step below asks
+      # exactly that - of the Marketplace rather than of this task's exit status. Every way this can fail is
+      # then one the check already answers: a version that did not upload is not served, and a version that was
+      # uploaded by hand is served and matches. Reading the state instead of the error message also means no
+      # wording JetBrains may change one day is load-bearing.
+      - name: Publish
+        env:
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
+          # signPlugin runs as a dependency of publishPlugin and needs these, although what is uploaded is the
+          # archive named below rather than anything it produces.
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: |
+          archive="$(ls build/distributions/*-signed.zip)"
+          ./gradlew publishPlugin -PpublishArchive="${archive}" && status=0 || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::warning::publishPlugin exited ${status}; whether that matters is settled by the check below"
+          fi
+
+      - name: Check that the Marketplace serves what was accepted
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          # Both read out of the checkout rather than written down a second time: the plugin as the Marketplace
+          # knows it, and what this repository calls the version inside a tag.
+          id="$(sed -n 's:.*<id>\(.*\)</id>.*:\1:p' src/main/resources/META-INF/plugin.xml | head -1)"
+          VERSION="${TAG#$(tools/check-release.py prefix)}"
+          url="https://plugins.jetbrains.com/plugin/download?pluginId=${id}&version=${VERSION}"
+
+          # A pre-release is served from the channel its suffix names and from nowhere else, so that is where
+          # it is asked for. The rule is the same one build.gradle.kts published with. A final release is asked
+          # for with no channel at all: what publishPlugin calls `default` the Marketplace serves under no name
+          # (or `stable`), and asking for `default` by that name is answered 404.
+          channel="$(tools/check-release.py channel "${VERSION}")"
+          if [ "${channel}" != default ]; then
+            url="${url}&channel=${channel}"
+          fi
+
+          # An upload is not servable the instant it is taken, so a 404 straight after publishing says "not yet"
+          # as often as it says "not there". An update to a listed plugin is served without anyone reviewing
+          # it, so the wait below is cover for a slow or faltering Marketplace, not for a review - a plugin's
+          # very first version is reviewed, by a person, and no bounded wait would sit through that. Five
+          # minutes, which is a guess and not a measurement. A version that never appears still fails, only
+          # later.
+          code=000
+          for attempt in $(seq 1 10); do
+            code="$(curl -sS -L -o served.zip -w '%{http_code}' "$url")" || code=000
+            [ "$code" = 200 ] && break
+            echo "attempt ${attempt}: HTTP ${code}, waiting"
+            sleep 30
+          done
+
+          if [ "$code" != 200 ]; then
+            echo "::error::${VERSION} is not served by the Marketplace (last HTTP ${code}). Either the upload" \
+                 "did not happen, or this plugin has no listing yet and the first version has to be uploaded" \
+                 "by hand."
+            exit 1
+          fi
+
+          python3 - "$(ls build/distributions/*-signed.zip)" served.zip <<'PY'
+          import sys, zipfile
+
+          # Compared by payload and not by the file, because the two can never be the same file: the Marketplace
+          # counter-signs what it is given, and that signature is written outside the entries, leaving every
+          # entry's name, size and CRC untouched. A byte comparison would fail on it, and would go on failing
+          # every time the certificate behind it changes, neither of which is a defect. The payload is what a
+          # signature leaves alone, so it is what can be held to.
+          def payload(path):
+              with zipfile.ZipFile(path) as archive:
+                  return sorted((e.filename, e.file_size, e.CRC) for e in archive.infolist())
+
+          accepted, served = (payload(path) for path in sys.argv[1:3])
+          if accepted == served:
+              print(f"The Marketplace serves the accepted payload: {len(accepted)} entries, all matching.")
+              raise SystemExit(0)
+
+          for entry in sorted({e[0] for e in accepted} ^ {e[0] for e in served}):
+              print(f"only one of the two has {entry}", file=sys.stderr)
+          for name, size, crc in accepted:
+              for other, other_size, other_crc in served:
+                  if other == name and (other_size, other_crc) != (size, crc):
+                      print(f"{name} differs: accepted {size}B/{crc:08x}, served {other_size}B/{other_crc:08x}",
+                            file=sys.stderr)
+          raise SystemExit("the Marketplace is not serving the payload that was accepted")
+          PY
+
+      # The warning below outlives the run that wrote it: a re-run by hand that puts the upload right and passes
+      # the check would otherwise leave the release saying that publishing went wrong. Taken off here, by the
+      # run that has just shown it to be untrue, and only the block this workflow wrote - the notes above and
+      # below it are the release's own.
+      - name: Take the warning off the release once the check passes
+        if: success()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          notes="$(gh release view "$TAG" --json body --jq '.body')"
+          if ! printf '%s' "$notes" | grep -q 'did not complete cleanly'; then
+            echo "The release carries no warning; nothing to take off."
+            exit 0
+          fi
+          # The block is the blockquote at the top of the notes, down to the blank line that closes it.
+          printf '%s\n' "$notes" | awk '
+            !done && /^>/ { next }
+            !done && /^$/ { done = 1; next }
+            { done = 1; print }
+          ' | gh release edit "$TAG" --notes-file -
+          echo "The warning is off ${TAG}; the check has passed."
+
+      # Said on the release, because that is where someone who has the archive in hand will be looking, and they
+      # have no reason to go through the runs of a workflow to find out that one of them went red.
+      - name: Say on the release that the check did not pass
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.release.outputs.tag }}
+          RUN: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          notes="$(gh release view "$TAG" --json body --jq '.body')"
+
+          # A re-run that fails again must not say so twice.
+          if printf '%s' "$notes" | grep -q 'did not complete cleanly'; then
+            echo "The release already carries this warning; leaving it as it is."
+            exit 0
+          fi
+
+          {
+            echo '> [!WARNING]'
+            echo '> Publishing this release to the JetBrains Marketplace did not complete cleanly:'
+            echo "> [the run that tried](${RUN}) went red. What the Marketplace serves for this"
+            echo '> version may not be the archive attached here.'
+            echo
+            printf '%s\n' "$notes"
+          } | gh release edit "$TAG" --notes-file -
+
+  merge-back:
+    name: Bump the version and offer the branch to main
+    # Only for the release itself. A run started by hand is taking the upload over again, and by then this
+    # branch has been pushed and its pull request opened; doing it a second time would only fail.
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    env:
+      VERSION: ${{ github.event.release.tag_name }}
+      # Asked of the repository rather than written down here, so that this file says the same thing in a
+      # plugin whose default branch is called something else. Carried by both events that start this workflow.
+      DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # What follows a release is a question about versions, so it is answered where the other ones are. Counting
+      # the patch up here would be wrong after a pre-release: 0.2.0-rc.1 was a step towards 0.2.0, and work goes
+      # on heading for it rather than skipping to 0.2.1.
+      - name: Bump to the next version being worked on
+        id: bump
+        run: |
+          version="${VERSION#$(tools/check-release.py prefix)}"
+          next="$(tools/check-release.py next "$VERSION")"
+          echo "next=${next}" >> "$GITHUB_OUTPUT"
+
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch "release/${version}"
+          # Rewritten by the tool that also reads that line, rather than by a pattern here: a reader and a
+          # writer that have to agree about how the line is written can drift apart in silence, and it is the
+          # writing that stops while the reading goes on working.
+          tools/check-release.py set-version "${next}"
+          git commit -am "chore: start ${next%-SNAPSHOT}"
+
+          # Work that landed on the default branch while the draft was waiting is merged in here, so that the
+          # checks on the pull request run over the tree that will land rather than over one that never
+          # existed.
+          # The changelog check is the reason: a three-way merge will put an entry added to [Unreleased] after
+          # the branch point into the released section instead, cleanly and with no conflict to stop it.
+          #
+          # A merge that does conflict is left to be resolved on the pull request, which is where a conflict is
+          # resolved anyway - and resolving it is itself the merge, so the checks end up over the same tree.
+          # Attempting it must not be able to fail the job: the release is out either way.
+          git merge --no-edit "origin/${DEFAULT_BRANCH}" || git merge --abort
+
+          git push origin "release/${version}"
+
+      # Merged rather than squashed, deliberately: the tag points at the release commit inside this branch, and
+      # a squash would replace that commit with another, leaving the tag off the history of `main`.
+      - name: Offer the branch to main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          NEXT: ${{ steps.bump.outputs.next }}
+        run: |
+          version="${VERSION#$(tools/check-release.py prefix)}"
+          gh pr create \
+            --base "${DEFAULT_BRANCH}" \
+            --head "release/${version}" \
+            --title "Release ${version}, and start ${NEXT%-SNAPSHOT}" \
+            --body "$(cat <<BODY
+          \`${VERSION}\` is published. This carries back what the release did and opens the next version.
+
+          - the changelog section for ${version}, closed and dated as it was released;
+          - \`version=${NEXT}\` in \`gradle.properties\`, the next version to be worked on.
+
+          Merge with a merge commit rather than a squash: \`${VERSION}\` points at the release commit in this
+          branch, and a squash would leave the tag off the history of \`main\`.
+          BODY
+          )"

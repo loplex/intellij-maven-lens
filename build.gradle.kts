@@ -29,6 +29,17 @@ val localIdePath: String = providers
     .get()
 
 intellijPlatform {
+    publishing {
+        // The Marketplace channel publishPlugin uploads to: the first identifier of the pre-release suffix,
+        // or `default` for a final release, so that 0.3.0-beta.1 is offered only to whoever subscribed to
+        // `beta` and 0.3.0 to everyone. Without this every version, pre-release or not, lands on `default`.
+        // The same rule is `channel_of` in tools/check-release.py, which is what the workflows mark the
+        // GitHub release with and ask the Marketplace for afterwards; a change here is a change there.
+        channels = providers.gradleProperty("version").map {
+            listOf(it.substringAfter('-', "").substringBefore('.').ifEmpty { "default" })
+        }
+    }
+
     pluginVerification {
         // Spelled out rather than left at the default so INTERNAL_API_USAGES cannot quietly drop
         // off the list again. It was dropped once, to let the plugin call the Maven embedder
@@ -103,8 +114,31 @@ changelog {
     // without this the versionPrefix below has nothing to apply to and no links are written.
     repositoryUrl = providers.gradleProperty("pluginRepositoryUrl")
 
-    // Releases are tagged with the bare version, the way publishing a release draft names the
-    // tag, so those links have to be generated without the 'v' prefix this plugin would otherwise
-    // apply - they would point at tags that do not exist
-    versionPrefix = ""
+    // What a release tag carries in front of the version, declared once in gradle.properties and
+    // read from there by the release tooling too. Without this the plugin applies a 'v' of its own
+    // and the links point at tags that do not exist; with the fact written down twice, the links
+    // and the tags could come to disagree and nothing would say so.
+    versionPrefix = providers.gradleProperty("tagPrefix").getOrElse("")
+}
+
+tasks {
+    publishPlugin {
+        // -SNAPSHOT says the version has not been released, so it is precisely what must not be published. A
+        // release drops the marker before it builds, so this can only be reached by a publish run by hand from
+        // a branch that still carries it - which is exactly when it is worth refusing.
+        val declared = providers.gradleProperty("version").get()
+        doFirst {
+            require(!declared.endsWith("-SNAPSHOT")) {
+                "$declared is a version being worked on, not one to publish"
+            }
+        }
+
+        // Publishes an archive built earlier rather than one built here, so that what reaches the Marketplace
+        // is the file that was attached to the GitHub release and could be downloaded and tried before it was
+        // accepted. Without the property the task publishes its own build, as it does by default.
+        val archive = providers.gradleProperty("publishArchive")
+        if (archive.isPresent) {
+            archiveFile = layout.projectDirectory.file(archive.get())
+        }
+    }
 }

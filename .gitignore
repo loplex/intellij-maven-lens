@@ -9,3 +9,6 @@ out/
 
 # Machine-specific overrides, e.g. localIdePath (see build.gradle.kts)
 /local.properties
+
+# Byte-code left behind by running the release checks and their tests.
+__pycache__

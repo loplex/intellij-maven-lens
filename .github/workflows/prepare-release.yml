@@ -1,0 +1,138 @@
+name: Prepare release
+
+# Cuts a release from what the repository already says. There is nothing to type: `gradle.properties` names the
+# version being worked on, marked -SNAPSHOT, and dropping that marker is what a release is.
+#
+# Nothing reaches `main` here. The release commit goes onto a branch of its own and the draft is built from it,
+# so a draft that is thrown away leaves the default branch as it was - no commit to revert and no tag to delete.
+# What it does leave, the branch and the draft, the next run for the same version replaces. The branch is
+# merged back by Publish, once the release has been accepted.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Build, sign and draft the release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          # The version check reads every tag to answer what may follow what.
+          fetch-depth: 0
+
+      # The JDK Gradle runs on, which is a property of this pipeline rather than of the plugin: what a plugin
+      # compiles against is its own `jvmToolchain`, declared in its build script, and a plugin that targets
+      # something older still builds here.
+      - uses: actions/setup-java@v6
+        with:
+          distribution: zulu
+          java-version: 21
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # Neither Java nor Gradle: it reads gradle.properties and the tags, and answers in milliseconds.
+      - name: Settle what is being released
+        id: version
+        run: |
+          version="$(tools/check-release.py version)"
+          echo "version=${version}" >> "$GITHUB_OUTPUT"
+          # The tag's spelling is declared in gradle.properties and read back here, rather than written into
+          # this file a second time where it could come to disagree with the tags the repository already has.
+          echo "tag=$(tools/check-release.py prefix)${version}" >> "$GITHUB_OUTPUT"
+
+      # A release whose notes are empty is a release nobody meant to make - the changelog entries are written as
+      # the work is done, so an empty section means the work was not written down rather than that it was nil.
+      - name: Refuse an empty Unreleased section
+        run: |
+          ./gradlew getChangelog --unreleased --no-header --no-summary --output-file=unreleased.md
+          if ! grep -q '[^[:space:]]' unreleased.md; then
+            echo "::error::The Unreleased section of CHANGELOG.md is empty; there is nothing to release"
+            exit 1
+          fi
+          rm -f unreleased.md
+
+      # Committed before anything is pushed, so that a build that fails leaves neither a branch nor a draft.
+      # A step of its own, and so a Gradle invocation of its own: getChangelog reads the file patchChangelog
+      # writes, and Gradle refuses to run the two in one build without being told which comes first.
+      - name: Drop the marker and close the changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git switch -c "release/${VERSION}"
+          # Rewritten by the tool that also reads that line, rather than by a pattern here: a reader and a
+          # writer that have to agree about how the line is written can drift apart in silence, and it is the
+          # writing that stops while the reading goes on working.
+          tools/check-release.py set-version "${VERSION}"
+          # Reads the version it has just been given, project.version being where gradle.properties lands.
+          ./gradlew patchChangelog
+          git add gradle.properties CHANGELOG.md
+          git commit -m "chore(release): ${VERSION}"
+          git --no-pager show --stat
+
+      - run: ./gradlew check
+
+      - name: Build and sign
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+        run: ./gradlew signPlugin
+
+      # The same section of CHANGELOG.md that the plugin's own change notes are built from, so the release page
+      # and the Marketplace listing say one thing.
+      - name: Take the release notes out of the changelog
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          ./gradlew getChangelog \
+            --project-version="${VERSION}" \
+            --no-header --no-summary \
+            --output-file=release-notes.md
+
+      # Forced, because a branch of this name may be standing from a run whose draft was thrown away, and it is
+      # this workflow's own: nothing else writes to it before the release is published, and once it is, the tag
+      # stops the same version from being prepared again.
+      - name: Push the release branch
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: git push --force origin "release/${VERSION}"
+
+      # A draft, carrying the signed archive that will be published: accepting it is a decision taken with the
+      # file in hand, having been able to install it.
+      #
+      # The tag is named but not created. GitHub creates it, at the target below, only when the draft is
+      # published - so a draft that is thrown away leaves no tag behind, and the tag always names a release that
+      # someone accepted.
+      - name: Draft the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.version.outputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          # A draft with this tag's name may be standing from a run whose release was thrown away. GitHub would
+          # put a second one beside it rather than replace it, so it goes first. Only a draft: a published
+          # release of this version would have stopped the version check at the top.
+          if [ "$(gh release view "${TAG}" --json isDraft --jq .isDraft 2>/dev/null)" = true ]; then
+            echo "Replacing the draft ${TAG} left by an earlier run"
+            gh release delete "${TAG}" --yes
+          fi
+
+          # A version with a pre-release suffix is marked as one, so that GitHub does not hold it out as the
+          # latest release and Publish can tell what it was handed. The channel rule is the script's, so that
+          # this file and the Marketplace check agree about what a suffix means.
+          prerelease=()
+          if [ "$(tools/check-release.py channel "${VERSION}")" != default ]; then
+            prerelease=(--prerelease)
+          fi
+
+          gh release create "${TAG}" \
+            --draft "${prerelease[@]}" \
+            --target "$(git rev-parse HEAD)" \
+            --title "${TAG}" \
+            --notes-file release-notes.md \
+            build/distributions/*-signed.zip
