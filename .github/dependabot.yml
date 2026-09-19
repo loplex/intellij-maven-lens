@@ -1,6 +1,11 @@
 # Dependabot configuration:
 # https://docs.github.com/en/free-pro-team@latest/github/administering-a-repository/configuration-options-for-dependency-updates
 
+# Commit messages follow Conventional Commits, as the rest of the history does:
+# `build(deps): bump x from a to b`. Dependabot adds the colon itself, and `scope` is the only value
+# `include` takes. Two limits worth knowing: the capitalisation of `bump` is not a setting - it is
+# inferred from recent commits - and the subject runs past 72 characters with no way to shorten it.
+
 version: 2
 updates:
   # Maintain dependencies for Gradle dependencies
@@ -8,6 +13,9 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    commit-message:
+      prefix: "build"
+      include: "scope"
     ignore:
       # Kotlin is pinned to the line bundled with the target IntelliJ
       # platform (see settings.gradle.kts) - only patch bumps within that
@@ -21,3 +29,6 @@ updates:
     directory: "/"
     schedule:
       interval: "daily"
+    commit-message:
+      prefix: "build"
+      include: "scope"
