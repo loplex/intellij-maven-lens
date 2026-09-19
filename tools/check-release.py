@@ -134,10 +134,11 @@ def channel_of(version: str) -> str:
     `default` for a final release. `0.3.0-beta.1` goes to `beta`, where only whoever subscribed to that channel
     is offered it; `0.3.0` goes to everyone.
 
-    The same rule, in Kotlin, sets `publishing.channels` in build.gradle.kts - that is what publishPlugin
-    uploads to, and this is what the workflows mark the GitHub release with and ask the Marketplace for
-    afterwards. One rule spelled twice, each beside a comment naming the other, because Gradle cannot be asked
-    cheaply from a workflow and this module cannot configure Gradle. A change to one is a change to both.
+    This is what the workflows mark the GitHub release with, upload to the Marketplace under, and ask the
+    Marketplace for afterwards. The same rule, in Kotlin, sets `publishing.channels` in build.gradle.kts for a
+    publishPlugin run by hand. One rule spelled twice, each beside a comment naming the other, because Gradle
+    cannot be asked cheaply from a workflow and this module cannot configure Gradle. A change to one is a change
+    to both.
     """
     suffix = VERSION.match(version).group(4)
     if suffix is None:

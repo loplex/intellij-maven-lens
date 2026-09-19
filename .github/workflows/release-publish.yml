@@ -3,7 +3,7 @@ name: Publish the accepted release
 # Runs when a drafted release is published, which is the moment the release is accepted and the moment its tag
 # comes into being. It can also be started by hand against a tag that is already released, which is the way
 # back in after something here had to be put right by hand - the first upload to the Marketplace above all,
-# which is a listing `publishPlugin` cannot create and so has to be made by a person.
+# which is a listing the upload API cannot create and so has to be made by a person.
 #
 # Two jobs that do not wait on each other, because the things they finish are not the same thing. Uploading to
 # the Marketplace is one way the release is distributed; merging the release branch is how the repository
@@ -49,68 +49,115 @@ jobs:
         with:
           ref: ${{ steps.release.outputs.tag }}
 
-      # The JDK Gradle runs on, which is a property of this pipeline rather than of the plugin: what a plugin
-      # compiles against is its own `jvmToolchain`, declared in its build script, and a plugin that targets
-      # something older still builds here.
-      - uses: actions/setup-java@v6
-        with:
-          distribution: zulu
-          java-version: 21
+      # Neither Java nor Gradle is set up: nothing in this job compiles. The archive was built, signed and
+      # accepted already, and the Marketplace is spoken to over HTTP.
 
-      - uses: gradle/actions/setup-gradle@v6
+      # Read out of the checkout rather than written down a second time: the plugin as the Marketplace knows
+      # it, and what this repository calls the version inside a tag. Settled once, for the upload and for the
+      # check that follows it, so that the two cannot come to ask about different things.
+      - name: Settle what the Marketplace is asked about
+        id: plugin
+        env:
+          TAG: ${{ steps.release.outputs.tag }}
+        run: |
+          id="$(sed -n 's:.*<id>\(.*\)</id>.*:\1:p' src/main/resources/META-INF/plugin.xml | head -1)"
+          if [ -z "$id" ]; then
+            echo "::error::plugin.xml names no <id>"
+            exit 1
+          fi
+          prefix="$(tools/check-release.py prefix)"
+          version="${TAG#"$prefix"}"
+          # A pre-release goes to the channel its suffix names and a final release to `default`. The rule is
+          # the script's - the one build.gradle.kts and Prepare use too - so that everything that touches a
+          # channel agrees about what a suffix means.
+          channel="$(tools/check-release.py channel "${version}")"
+          {
+            echo "id=${id}"
+            echo "version=${version}"
+            echo "channel=${channel}"
+          } >> "$GITHUB_OUTPUT"
 
       # The archive built and signed from the release commit, rather than a second build of the same sources:
       # what reaches the Marketplace is the file that was there to be downloaded and tried before it was
-      # accepted.
+      # accepted. Exactly one is expected, and its name has to carry the version the tag names: nothing below
+      # reads the version out of the archive, so this is where the two are tied together.
       - name: Take the archive off the release
+        id: archive
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ steps.release.outputs.tag }}
+          VERSION: ${{ steps.plugin.outputs.version }}
         run: |
-          mkdir -p build/distributions
+          dir="${RUNNER_TEMP}/accepted"
           gh release download "$TAG" \
             --pattern '*-signed.zip' \
-            --dir build/distributions
-          ls -l build/distributions
+            --dir "$dir"
+          ls -l "$dir"
+          set -- "$dir"/*-"${VERSION}"-signed.zip
+          if [ "$#" -ne 1 ] || [ ! -f "$1" ]; then
+            echo "::error::${TAG} does not carry exactly one archive named *-${VERSION}-signed.zip"
+            exit 1
+          fi
+          echo "path=$1" >> "$GITHUB_OUTPUT"
 
-      # Deliberately not allowed to fail the job, although its output is kept in full. What the release needs to
-      # be true is that the Marketplace ends up serving the archive that was accepted, and the step below asks
-      # exactly that - of the Marketplace rather than of this task's exit status. Every way this can fail is
+      # Handed to the Marketplace as it is, over its upload API - the call the Gradle publishPlugin task makes
+      # underneath, without the task. publishPlugin depends on buildPlugin and signPlugin, and signPlugin writes
+      # to the very path the asset would be downloaded to: through Gradle the archive would be rebuilt from
+      # source and overwritten before it was read, and the Marketplace would be handed a second build in place
+      # of the file that was accepted. The archive already carries the signature it was accepted with, so the
+      # signing key is Prepare's alone.
+      #
+      # Deliberately not allowed to fail the job, although the answer is kept in full. What the release needs
+      # to be true is that the Marketplace ends up serving the archive that was accepted, and the step below
+      # asks exactly that - of the Marketplace rather than of this upload's status. Every way this can fail is
       # then one the check already answers: a version that did not upload is not served, and a version that was
       # uploaded by hand is served and matches. Reading the state instead of the error message also means no
       # wording JetBrains may change one day is load-bearing.
       - name: Publish
         env:
           PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}
-          # signPlugin runs as a dependency of publishPlugin and needs these, although what is uploaded is the
-          # archive named below rather than anything it produces.
-          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
-          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
-          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+          ARCHIVE: ${{ steps.archive.outputs.path }}
+          ID: ${{ steps.plugin.outputs.id }}
+          CHANNEL: ${{ steps.plugin.outputs.channel }}
         run: |
-          archive="$(ls build/distributions/*-signed.zip)"
-          ./gradlew publishPlugin -PpublishArchive="${archive}" && status=0 || status=$?
-          if [ "$status" -ne 0 ]; then
-            echo "::warning::publishPlugin exited ${status}; whether that matters is settled by the check below"
+          # No channel field for a final release: the Marketplace takes an empty channel as its default one,
+          # `Stable`, which is also what publishPlugin does with `default` - it sends nothing.
+          channel=()
+          if [ "$CHANNEL" != default ]; then
+            channel=(-F "channel=${CHANNEL}")
           fi
+          # The fields JetBrains' own client sends for an upload by xmlId: `family` names the product line the
+          # id belongs to, and the client sends it every time rather than leaving it to a default.
+          answer="${RUNNER_TEMP}/upload-answer.txt"
+          code="$(curl -sS -o "$answer" -w '%{http_code}' \
+            -H "Authorization: Bearer ${PUBLISH_TOKEN}" \
+            -F "xmlId=${ID}" \
+            -F "family=intellij" \
+            -F "file=@${ARCHIVE}" \
+            "${channel[@]}" \
+            https://plugins.jetbrains.com/api/updates/upload)" || code=000
+          echo "HTTP ${code}"
+          cat "$answer"; echo
+          case "$code" in
+            2??) ;;
+            *) echo "::warning::the upload was answered HTTP ${code}; whether that matters is settled by the check below" ;;
+          esac
 
       - name: Check that the Marketplace serves what was accepted
         env:
-          TAG: ${{ steps.release.outputs.tag }}
+          ARCHIVE: ${{ steps.archive.outputs.path }}
+          ID: ${{ steps.plugin.outputs.id }}
+          VERSION: ${{ steps.plugin.outputs.version }}
+          CHANNEL: ${{ steps.plugin.outputs.channel }}
         run: |
-          # Both read out of the checkout rather than written down a second time: the plugin as the Marketplace
-          # knows it, and what this repository calls the version inside a tag.
-          id="$(sed -n 's:.*<id>\(.*\)</id>.*:\1:p' src/main/resources/META-INF/plugin.xml | head -1)"
-          VERSION="${TAG#$(tools/check-release.py prefix)}"
-          url="https://plugins.jetbrains.com/plugin/download?pluginId=${id}&version=${VERSION}"
+          url="https://plugins.jetbrains.com/plugin/download?pluginId=${ID}&version=${VERSION}"
 
           # A pre-release is served from the channel its suffix names and from nowhere else, so that is where
-          # it is asked for. The rule is the same one build.gradle.kts published with. A final release is asked
-          # for with no channel at all: what publishPlugin calls `default` the Marketplace serves under no name
-          # (or `stable`), and asking for `default` by that name is answered 404.
-          channel="$(tools/check-release.py channel "${VERSION}")"
-          if [ "${channel}" != default ]; then
-            url="${url}&channel=${channel}"
+          # it is asked for. A final release is asked for with no channel at all: what the script calls `default`
+          # the Marketplace serves under no name (or `stable`), and asking for `default` by that name is answered
+          # 404.
+          if [ "${CHANNEL}" != default ]; then
+            url="${url}&channel=${CHANNEL}"
           fi
 
           # An upload is not servable the instant it is taken, so a 404 straight after publishing says "not yet"
@@ -119,9 +166,10 @@ jobs:
           # very first version is reviewed, by a person, and no bounded wait would sit through that. Five
           # minutes, which is a guess and not a measurement. A version that never appears still fails, only
           # later.
+          served="${RUNNER_TEMP}/served.zip"
           code=000
           for attempt in $(seq 1 10); do
-            code="$(curl -sS -L -o served.zip -w '%{http_code}' "$url")" || code=000
+            code="$(curl -sS -L -o "$served" -w '%{http_code}' "$url")" || code=000
             [ "$code" = 200 ] && break
             echo "attempt ${attempt}: HTTP ${code}, waiting"
             sleep 30
@@ -134,7 +182,7 @@ jobs:
             exit 1
           fi
 
-          python3 - "$(ls build/distributions/*-signed.zip)" served.zip <<'PY'
+          python3 - "$ARCHIVE" "$served" <<'PY'
           import sys, zipfile
 
           # Compared by payload and not by the file, because the two can never be the same file: the Marketplace

@@ -30,11 +30,12 @@ val localIdePath: String = providers
 
 intellijPlatform {
     publishing {
-        // The Marketplace channel publishPlugin uploads to: the first identifier of the pre-release suffix,
-        // or `default` for a final release, so that 0.3.0-beta.1 is offered only to whoever subscribed to
-        // `beta` and 0.3.0 to everyone. Without this every version, pre-release or not, lands on `default`.
-        // The same rule is `channel_of` in tools/check-release.py, which is what the workflows mark the
-        // GitHub release with and ask the Marketplace for afterwards; a change here is a change there.
+        // The Marketplace channel a publishPlugin run by hand uploads to: the first identifier of the
+        // pre-release suffix, or `default` for a final release, so that 0.3.0-beta.1 is offered only to
+        // whoever subscribed to `beta` and 0.3.0 to everyone. Without this every version, pre-release or
+        // not, lands on `default`. The release itself is uploaded by the Publish workflow over the
+        // Marketplace API, with the same rule as `channel_of` in tools/check-release.py - which is also
+        // what marks the GitHub release and asks the Marketplace afterwards; a change here is a change there.
         channels = providers.gradleProperty("version").map {
             listOf(it.substringAfter('-', "").substringBefore('.').ifEmpty { "default" })
         }
@@ -123,22 +124,15 @@ changelog {
 
 tasks {
     publishPlugin {
-        // -SNAPSHOT says the version has not been released, so it is precisely what must not be published. A
-        // release drops the marker before it builds, so this can only be reached by a publish run by hand from
-        // a branch that still carries it - which is exactly when it is worth refusing.
+        // -SNAPSHOT says the version has not been released, so it is precisely what must not be published. The
+        // release workflows never run this task - Publish uploads the accepted archive over the Marketplace API
+        // - so it is only ever reached by a publish run by hand, from a branch that may still carry the marker,
+        // which is exactly when it is worth refusing.
         val declared = providers.gradleProperty("version").get()
         doFirst {
             require(!declared.endsWith("-SNAPSHOT")) {
                 "$declared is a version being worked on, not one to publish"
             }
-        }
-
-        // Publishes an archive built earlier rather than one built here, so that what reaches the Marketplace
-        // is the file that was attached to the GitHub release and could be downloaded and tried before it was
-        // accepted. Without the property the task publishes its own build, as it does by default.
-        val archive = providers.gradleProperty("publishArchive")
-        if (archive.isPresent) {
-            archiveFile = layout.projectDirectory.file(archive.get())
         }
     }
 }
