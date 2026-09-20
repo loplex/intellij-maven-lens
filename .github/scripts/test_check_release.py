@@ -84,6 +84,13 @@ class ThePreReleaseTrain(unittest.TestCase):
     def test_the_train_may_end_in_the_release_it_was_for(self):
         self.assertEqual(check_version("0.2.0", ["0.1.0", "0.2.0-rc.1", "0.2.0-rc.2"]), [])
 
+    def test_re_releasing_a_tagged_pre_release_is_refused(self):
+        """The equal half of the base invariant, where the step check has nothing to say: 0.2.0-rc.1 sits
+        inside a core that 0.1.0 permits, so only `<=` stands between a tag and being released twice."""
+        problems = check_version("0.2.0-rc.1", ["0.1.0", "0.2.0-rc.1"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("does not come after", problems[0])
+
     def test_going_backwards_inside_the_train_is_refused(self):
         self.assertTrue(check_version("0.2.0-rc.1", ["0.1.0", "0.2.0-rc.2"]))
 
@@ -319,9 +326,11 @@ class RewritingTheVersion(unittest.TestCase):
 
 class WhichTagsCountAsReleases(unittest.TestCase):
     """A repository carries tags that are not releases - the backups a history rewrite leaves behind - and it
-    carries its releases under whichever spelling it tags with. The prefix has to sort both out, and in both
-    directions: a project tagging bare versions must not count `v0.1.0`, and one tagging `v*` must not count
-    `0.1.0`. Getting that wrong is quiet, because what it produces is an empty list and a check that passes."""
+    carries its releases under whichever spelling it tags with. Two things sort that out, and the tests below
+    hold both: the prefix, which is what a project tagging `v*` selects by and strips, and the version pattern,
+    which is what keeps `v0.1.0` out of a project that tags bare versions - the glob passes it and the prefix
+    takes nothing off it, so only the pattern refuses it. Getting either wrong is quiet, because what it
+    produces is an empty list and a check that passes having compared nothing."""
 
     PLANTED = [
         "v0.1.0", "v1.2.3-rc.1", "v1.2", "version-1.0",

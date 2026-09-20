@@ -7,7 +7,7 @@
 - `ancestry` - whether every released tag is still reachable, a rewrite being able to take one off the history.
 - `prefix` - what release tags are called here, so that the workflows do not have to say it a second time.
 - `channel` - the Marketplace channel a version goes to, read off its pre-release suffix.
-- `set-version` - write the version gradle.properties names, which a release is what does.
+- `set-version` - write the version gradle.properties names, which is what a release does.
 
 All of it sits on plain functions over text, tags and booleans, so that the rules can be exercised without a
 repository to release. The tests beside this file are what exercises them.
@@ -271,9 +271,11 @@ def git(*arguments: str) -> str:
 
 
 def properties() -> dict[str, str]:
-    """gradle.properties, read the way Gradle reads it rather than by prefix. `version = 0.2.0` and
-    `version=0.2.0` are one declaration written two ways, and a reader that knows only the second reports a
-    file that names no version when it names one."""
+    """gradle.properties, read as the `name = value` lines Gradle declares a version in. Both spellings are
+    taken, `version = 0.2.0` and `version=0.2.0`, because a reader that knows only one reports a file that
+    names no version when it names one. Not the whole Java properties format - no `:` separator, no
+    continuation lines, no escapes - which is enough for a version and a tag prefix and fails loudly rather
+    than quietly when it is not."""
     found = {}
     for line in (REPO / "gradle.properties").read_text(encoding="utf-8").splitlines():
         stripped = line.strip()
@@ -312,7 +314,7 @@ def tags() -> list[str]:
     return [
         tag[len(prefix) :]
         for tag in git("tag", "-l", f"{prefix}*").split()
-        if tag.startswith(prefix) and VERSION.match(tag[len(prefix) :])
+        if VERSION.match(tag[len(prefix) :])
     ]
 
 
