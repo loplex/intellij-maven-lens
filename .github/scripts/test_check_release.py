@@ -219,6 +219,21 @@ class ReleasedSections(unittest.TestCase):
         self.assertEqual(unprotected({"0.1.0": self.AT_TAG}), [])
 
 
+    def test_a_section_missing_while_its_release_is_off_this_history_is_not_called_deleted(self):
+        """Between a release being published and its branch reaching the default branch, the section exists
+        only where the tag does. `ancestry` already fails for it; this one saying the section is gone as well
+        reads as a second, separate accusation about somebody having deleted text."""
+        problems = check_changelog("# Changelog\n\n## [Unreleased]\n", {"0.1.0": self.AT_TAG}, {"0.1.0"})
+        self.assertEqual(len(problems), 1)
+        self.assertNotIn("is gone", problems[0])
+        self.assertIn("has yet to reach here", problems[0])
+
+    def test_a_section_missing_while_its_release_is_on_this_history_is_a_deletion(self):
+        problems = check_changelog("# Changelog\n\n## [Unreleased]\n", {"0.1.0": self.AT_TAG}, set())
+        self.assertEqual(len(problems), 1)
+        self.assertIn("is gone", problems[0])
+
+
 class ReachableTags(unittest.TestCase):
     def test_tags_that_are_still_on_the_history_pass(self):
         self.assertEqual(check_ancestry({"0.1.0": True, "0.2.0": True}, "v"), [])
@@ -246,6 +261,24 @@ class ReachableTags(unittest.TestCase):
 
     def test_a_repository_with_nothing_released_passes(self):
         self.assertEqual(check_ancestry({}, "v"), [])
+
+    def test_a_branch_that_still_holds_the_tag_is_named_with_both_readings(self):
+        """The state every release passes through between being published and reaching the default branch -
+        and, indistinguishably from the outside, what a squash or a rebase merge leaves behind, since both
+        replay the release commit and leave the branch that holds the original standing. Failing is right
+        either way; naming only the innocent reading sends the reader away from damage that is there."""
+        problems = check_ancestry({"0.2.0": False}, "v", {"0.2.0": "origin/release/0.2.0"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("origin/release/0.2.0", problems[0])
+        self.assertIn("carried back", problems[0])
+        self.assertIn("rebase", problems[0])
+
+    def test_an_orphan_no_branch_holds_is_still_blamed_on_a_rewrite(self):
+        """Told apart by whether any branch holds the tag, so a tag that a rebase merge left behind while its
+        branch was deleted - the shape that is easiest to mistake for the other - still reads as a rewrite."""
+        problems = check_ancestry({"0.2.0": False}, "v", {"0.2.0": ""})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("rewrite", problems[0])
 
 
 class RewritingTheVersion(unittest.TestCase):
