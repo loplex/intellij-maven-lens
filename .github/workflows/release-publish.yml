@@ -282,7 +282,7 @@ jobs:
           } | gh release edit "$TAG" --notes-file -
 
   merge-back:
-    name: Bump the version and offer the branch to main
+    name: Bump the version and land the branch on main
     # Only for the release itself. A run started by hand is taking the upload over again, and by then this
     # branch has been pushed and its pull request opened; doing it a second time would only fail.
     if: github.event_name == 'release'
@@ -290,6 +290,10 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      # Asking for a Build run by hand is a write to Actions, not to the contents: without this the dispatch
+      # below is answered 403 and the release lands with nothing having checked it. Measured, not deduced -
+      # the first run of this job in a sandbox repository failed exactly that way.
+      actions: write
     env:
       VERSION: ${{ github.event.release.tag_name }}
       # Asked of the repository rather than written down here, so that this file says the same thing in a
@@ -314,7 +318,10 @@ jobs:
         run: |
           version="${VERSION#$(.github/scripts/check-release.py prefix)}"
           next="$(.github/scripts/check-release.py next "$VERSION")"
-          echo "next=${next}" >> "$GITHUB_OUTPUT"
+          {
+            echo "next=${next}"
+            echo "version=${version}"
+          } >> "$GITHUB_OUTPUT"
 
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
@@ -325,51 +332,103 @@ jobs:
           .github/scripts/check-release.py set-version "${next}"
           git commit -am "chore: start ${next%-SNAPSHOT}"
 
-          # Work that landed on the default branch while the draft was waiting is merged in here, so that the
-          # checks on the pull request run over the tree that will land rather than over one that never
+          # Work that landed on the default branch while the draft was waiting is merged in here, so that what
+          # is about to become the default branch is a tree that was looked at rather than one that never
           # existed. The changelog check is the reason: a three-way merge can put an entry added to
           # [Unreleased] after the branch point into the released section instead - Git merges lines and cannot
           # see that a heading is a container - and whether it does so cleanly or stops on a conflict depends
           # on what stood around the entry.
           #
-          # A merge that does conflict is left to be resolved on the pull request, which is where a conflict is
-          # resolved anyway - and resolving it is itself the merge, so the checks end up over the same tree.
+          # It is also what makes the push below a fast-forward: the branch now holds the default branch's tip,
+          # so moving that branch onto this one takes no new commit.
+          #
+          # A merge that does conflict is left to a pull request, which is where a conflict is resolved anyway.
           # Attempting it must not be able to fail the job: the release is out either way. `--abort` undoes a
           # merge that stopped on a conflict; a merge that never began leaves nothing to abort, and says so.
-          if ! git merge --no-edit "origin/${DEFAULT_BRANCH}"; then
+          if git merge --no-edit "origin/${DEFAULT_BRANCH}"; then
+            echo "merged=true" >> "$GITHUB_OUTPUT"
+          else
             git merge --abort 2>/dev/null || true
+            echo "merged=false" >> "$GITHUB_OUTPUT"
             echo "::warning::origin/${DEFAULT_BRANCH} did not merge into release/${version}; the pull request" \
                  "carries the conflict"
           fi
 
-          git push origin "release/${version}"
+      # Pushed rather than offered, because the tag is the point. It names the commit the archive was built and
+      # signed from, and every way GitHub's own buttons land a branch - squash, rebase, and the merge commit
+      # too, which never fast-forwards - either replaces that commit or buries it under one more. A push moves
+      # the branch onto the commit that is already there, so the history stays linear and the tag sits on it.
+      #
+      # Not forced, deliberately. The push is a fast-forward only while nothing else has moved the default
+      # branch since the merge above; if something has, Git refuses it and the pull request below carries the
+      # release instead. That refusal is the race being caught, not an error to push past.
+      #
+      # A push made with GITHUB_TOKEN starts no workflow run, so Build would never see this commit. Asked for
+      # by hand instead: workflow_dispatch is one of the two events that token may raise, and build.yml has it.
+      # The run says `workflow_dispatch` rather than `push` in its listing, and checks the same commit.
+      - name: Land the release on main
+        id: land
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MERGED: ${{ steps.bump.outputs.merged }}
+          RELEASED: ${{ steps.bump.outputs.version }}
+        run: |
+          if [ "$MERGED" != true ]; then
+            echo "landed=false" >> "$GITHUB_OUTPUT"
+            echo "The merge conflicted; ${DEFAULT_BRANCH} is left to the pull request."
+            exit 0
+          fi
 
-      # Merged rather than squashed, deliberately: the tag points at the release commit inside this branch, and
-      # a squash would replace that commit with another, leaving the tag off the history of `main`.
+          if ! git push origin "HEAD:${DEFAULT_BRANCH}"; then
+            echo "landed=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::${DEFAULT_BRANCH} moved while this ran, so the fast-forward was refused; the" \
+                 "pull request carries the release instead"
+            exit 0
+          fi
+          echo "landed=true" >> "$GITHUB_OUTPUT"
+
+          # Neither of these is worth failing a release that is already out and already on the default branch,
+          # so both only say so. A Build that was not asked for can be started by hand; a branch that was not
+          # deleted is a branch standing about.
+          gh workflow run build.yml --ref "${DEFAULT_BRANCH}" \
+            || echo "::warning::Build was not started for ${DEFAULT_BRANCH}; start it by hand"
+          git push origin --delete "release/${RELEASED}" \
+            || echo "::warning::release/${RELEASED} is still there; it has landed and can be deleted"
+
+      # The way out of the two cases above, and nothing else: a conflict to resolve, or a default branch that
+      # moved under the push. A pull request after a release is therefore a thing to look at rather than a step
+      # of the process, which is why the body says what happened and how it must be merged.
       #
       # Opening a pull request from a workflow needs "Allow GitHub Actions to create and approve pull requests"
       # switched on in the repository's Actions settings; it is, and without it this step is a permissions
-      # error at the very end of a release. The Build run the pull request starts is created held: a run
-      # started by the Actions bot waits for someone to press "Approve and run" on the pull request, which is
-      # said in its body so that nobody waits for a check that is waiting for them.
-      - name: Offer the branch to main
+      # error at the very end of a release. The Build run it starts is created held: a run started by the
+      # Actions bot waits for someone to press "Approve and run" on the pull request, which is said in its body
+      # so that nobody waits for a check that is waiting for them.
+      - name: Offer the branch to main instead
+        if: steps.land.outputs.landed != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           NEXT: ${{ steps.bump.outputs.next }}
+          RELEASED: ${{ steps.bump.outputs.version }}
         run: |
-          version="${VERSION#$(.github/scripts/check-release.py prefix)}"
+          git push origin "release/${RELEASED}"
           gh pr create \
             --base "${DEFAULT_BRANCH}" \
-            --head "release/${version}" \
-            --title "Release ${version}, and start ${NEXT%-SNAPSHOT}" \
+            --head "release/${RELEASED}" \
+            --title "Release ${RELEASED}, and start ${NEXT%-SNAPSHOT}" \
             --body "$(cat <<BODY
-          \`${VERSION}\` is published. This carries back what the release did and opens the next version.
+          \`${VERSION}\` is published, but could not be carried back on its own: either \`${DEFAULT_BRANCH}\`
+          did not merge into this branch cleanly, or it moved while the release was being published. The run
+          that tried says which. This carries back what the release did and opens the next version.
 
-          - the changelog section for ${version}, closed and dated as it was released;
+          - the changelog section for ${RELEASED}, closed and dated as it was released;
           - \`version=${NEXT}\` in \`gradle.properties\`, the next version to be worked on.
 
-          Merge with a merge commit rather than a squash: \`${VERSION}\` points at the release commit in this
-          branch, and a squash would leave the tag off the history of \`main\`.
+          **Merge this with a merge commit.** Neither *Squash and merge* nor *Rebase and merge* may be used
+          here: \`${VERSION}\` points at the release commit in this branch, and both of them replace that
+          commit with a copy, which leaves the tag off the history of \`${DEFAULT_BRANCH}\`. *Rebase and merge*
+          does so even where a fast-forward would do, because it always rewrites committer and date. The
+          \`ancestry\` check goes red for every commit afterwards if that happens.
 
           The checks on this pull request are waiting to be approved, not running: a run started by the Actions
           bot is held until someone presses **Approve and run** on the Checks tab.
