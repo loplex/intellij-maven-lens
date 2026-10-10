@@ -4,8 +4,9 @@ rootProject.name = "maven-lens-ij-plugin"
 
 pluginManagement {
     plugins {
-        // Pinned to the Kotlin line bundled with the target IntelliJ platform
-        // (intellijIdea(...) in build.gradle.kts). The plugin ships no stdlib of
+        // Pinned to the Kotlin line bundled with the oldest IDE the plugin claims
+        // (sinceBuild in build.gradle.kts), not with the newer platform it is
+        // compiled against (intellijIdea(...)). The plugin ships no stdlib of
         // its own (kotlin.stdlib.default.dependency in gradle.properties), so
         // the platform's resumes its coroutines - and a newer compiler writes
         // an @DebugMetadata version that stdlib cannot read. The IDE runs with
@@ -15,8 +16,13 @@ pluginManagement {
         // out, on "Debug metadata version mismatch. Expected: 1, got 2".
         // The Plugin Verifier is not what catches this - the same build
         // reported every target IDE compatible, with no internal-API usage.
-        // Re-check plugins/Kotlin/kotlinc/build.txt in the target platform
-        // whenever intellijIdea(...) is bumped, and move this pin in lockstep.
+        // Nor do the tests any more: they run on the newer platform, whose
+        // stdlib may read what the oldest IDE's cannot. So this pin is the
+        // only guard. Whenever sinceBuild moves, read that IDE's stdlib
+        // version - the table at
+        // https://plugins.jetbrains.com/docs/intellij/using-kotlin.html, or
+        // kotlin.KotlinVersionCurrentValue in the jar under its lib/ - and
+        // move this pin in lockstep.
         id("org.jetbrains.kotlin.jvm") version "2.1.21"
         id("org.jetbrains.changelog") version "2.5.0"
     }

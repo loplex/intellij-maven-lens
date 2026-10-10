@@ -29,6 +29,16 @@ val localIdePath: String = providers
     .get()
 
 intellijPlatform {
+    pluginConfiguration {
+        ideaVersion {
+            // 2025.2, set here rather than derived from the platform below, which is newer. The
+            // tests run on that platform only, so 2025.2 is checked by the Plugin Verifier alone,
+            // and only in CI. The Kotlin pin in settings.gradle.kts follows this bound, not the
+            // platform: it is 2025.2's bundled stdlib that runs the plugin's coroutines there.
+            sinceBuild = "252"
+        }
+    }
+
     publishing {
         // The Marketplace channel a publishPlugin run by hand uploads to: the first identifier of the
         // pre-release suffix, or `default` for a final release, so that 0.3.0-beta.1 is offered only to
@@ -60,8 +70,8 @@ intellijPlatform {
             // default pulls in whatever EAP is newest - a fresh ~1.5 GB download on every clean
             // run, against a build nobody can install the plugin into yet.
             //
-            // No version is spelled out on either branch: both inherit sinceBuild from the
-            // patched since-build, which is itself derived from the target platform.
+            // No version is spelled out on either branch: both inherit sinceBuild from
+            // pluginConfiguration above.
             if (providers.environmentVariable("CI").isPresent) {
                 // Every released build the plugin claims to support - EAP and RC dropped, since a
                 // failure there says more about the EAP than about the plugin. This is the run
@@ -73,7 +83,8 @@ intellijPlatform {
                 // On a developer machine, verify against the platform this build already resolved,
                 // plus the installation local.properties names when there is one: both are on disk
                 // already, so the task downloads nothing. It checks less than CI does, which is the
-                // point - it is the quick answer, not the authoritative one. The local IDE is the
+                // point - it is the quick answer, not the authoritative one. In particular it never
+                // reaches 2025.2, the oldest IDE the plugin claims. The local IDE is the
                 // interesting half, since it is usually newer than the pinned release and is what
                 // runLocalIde launches the plugin in.
                 current()
@@ -90,10 +101,11 @@ dependencies {
 
     // IntelliJ Platform Gradle Plugin Dependencies Extension - read more: https://plugins.jetbrains.com/docs/intellij/tools-intellij-platform-gradle-plugin-dependencies-extension.html
     intellijPlatform {
-        // One platform, everywhere, for everyone: what since-build is patched from, what the tests
-        // run on, and what the published artifact is compiled against. A local installation stands
-        // in for it nowhere - see localIdePath above for what it does instead.
-        intellijIdea("2025.2.6.2")
+        // One platform, everywhere, for everyone: what the tests run on and what the published
+        // artifact is compiled against. It is not what since-build says - see pluginConfiguration
+        // above. A local installation stands in for it nowhere - see localIdePath above for what
+        // it does instead.
+        intellijIdea("2025.3.5")
         bundledPlugin("org.jetbrains.idea.maven")
         javaCompiler()
         testFramework(TestFrameworkType.Platform)

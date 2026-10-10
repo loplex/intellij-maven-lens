@@ -42,8 +42,11 @@ A ZIP obtained either of the last two ways is installed with
 
 ### Compatibility
 
-The plugin is built against IntelliJ IDEA 2025.2 and declares no upper bound, so it is offered to
+The plugin declares 2025.2 as its earliest IDE and no upper bound, so it is offered to
 **IntelliJ IDEA 2025.2 and newer, Community and Ultimate alike**.
+
+It is built and tested against IntelliJ IDEA 2025.3.\
+2025.2 is checked by the Plugin Verifier only, which finds missing or changed API but not a change in behavior.
 
 JetBrains Marketplace derives the same range for Android Studio and lists Otter (2025.2.1) and newer
 as compatible. That follows from the build number alone; this project does not test there.

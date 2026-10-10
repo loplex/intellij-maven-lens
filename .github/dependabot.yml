@@ -17,8 +17,8 @@ updates:
       prefix: "build"
       include: "scope"
     ignore:
-      # Kotlin is pinned to the line bundled with the target IntelliJ
-      # platform (see settings.gradle.kts) - only patch bumps within that
+      # Kotlin is pinned to the line bundled with the oldest IDE the plugin
+      # claims (see settings.gradle.kts) - only patch bumps within that
       # line can ever be safe, so minor/major bumps are not worth PRs.
       - dependency-name: "org.jetbrains.kotlin.jvm"
         update-types:
